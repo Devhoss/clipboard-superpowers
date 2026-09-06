@@ -1,8 +1,8 @@
 import { ClipboardCard } from "./ClipboardCard";
 import { ImageCard } from "./ImageCard";
 import { api } from "@/lib/api";
+import { evictCachedImage } from "@/lib/imageCache";
 import type { ClipboardItem } from "@/lib/types";
-import { ScrollArea } from "@/components/ui/scroll-area";
 
 export function HistoryList({
   items,
@@ -20,12 +20,14 @@ export function HistoryList({
   };
   const pin = (item: ClipboardItem) =>
     api.togglePin(item.id).then(onMutate).catch(console.error);
-  const remove = (item: ClipboardItem) =>
+  const remove = (item: ClipboardItem) => {
+    if (item.kind === "image") evictCachedImage(item.content);
     api.deleteItem(item.id).then(onMutate).catch(console.error);
+  };
 
   return (
-    <ScrollArea className="flex-1 min-h-0">
-      <div className="flex flex-col gap-2 pr-2">
+    <div className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+      <div className="flex w-full min-w-0 flex-col gap-2.5 pb-2">
         {items.map((item) =>
           item.kind === "image" ? (
             <ImageCard
@@ -46,6 +48,6 @@ export function HistoryList({
           ),
         )}
       </div>
-    </ScrollArea>
+    </div>
   );
 }

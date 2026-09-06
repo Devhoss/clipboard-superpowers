@@ -9,7 +9,7 @@ static RE_EMAIL: LazyLock<Regex> =
 static RE_HEX_COLOR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$").unwrap());
 static RE_RGB: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"rgb\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\)").unwrap()
+    Regex::new(r"rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*(,\s*[\d.]+\s*)?\)").unwrap()
 });
 
 const CODE_TOKENS: &[&str] = &[

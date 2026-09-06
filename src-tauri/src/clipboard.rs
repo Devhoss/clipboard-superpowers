@@ -42,6 +42,17 @@ fn save_image_png(dir: &PathBuf, hash: &str, width: usize, height: usize, rgba: 
     Some(path)
 }
 
+/// Canonical hash for image clipboard bytes. MUST stay in sync with
+/// `copy_image_to_clipboard` in commands.rs — both hash dimensions + pixels
+/// so our own writes are recognised and not re-captured.
+pub fn image_hash(width: usize, height: usize, bytes: &[u8]) -> String {
+    let mut hashed = Vec::with_capacity(16 + bytes.len());
+    hashed.extend_from_slice(&(width as u64).to_le_bytes());
+    hashed.extend_from_slice(&(height as u64).to_le_bytes());
+    hashed.extend_from_slice(bytes);
+    hash_content(&hashed)
+}
+
 fn store_and_emit(
     app: &AppHandle,
     state: &AppState,
@@ -49,9 +60,16 @@ fn store_and_emit(
     item: ClipboardItem,
     hash: String,
 ) {
-    if insert_item(conn, &item, MAX_ITEMS).is_ok() {
-        *state.last_hash.lock().unwrap() = Some(hash);
-        let _ = app.emit("clipboard:new-item", &item);
+    match insert_item(conn, &item, MAX_ITEMS) {
+        Ok(outcome) => {
+            *state.last_hash.lock().unwrap() = Some(hash);
+            let mut emitted = item;
+            emitted.id = outcome.id;
+            let _ = app.emit("clipboard:new-item", &emitted);
+        }
+        Err(e) => {
+            eprintln!("clipboard-superpowers: insert failed: {e}");
+        }
     }
 }
 
@@ -63,7 +81,9 @@ fn capture_and_store(
 ) {
     let already_seen = |hash: &str| state.last_hash.lock().unwrap().as_deref() == Some(hash);
 
-    // text first; fall back to image
+    // NOTE: text wins when the clipboard holds both text and an image
+    // (common when copying images from browsers). Documented v1 tradeoff —
+    // image is only stored when get_text() fails.
     if let Ok(text) = clipboard.get_text() {
         if text.trim().is_empty() {
             return;
@@ -84,11 +104,7 @@ fn capture_and_store(
         };
         store_and_emit(app, state, conn, item, hash);
     } else if let Ok(ImageData { width, height, bytes }) = clipboard.get_image() {
-        let mut hashed = Vec::with_capacity(16 + bytes.len());
-        hashed.extend_from_slice(&(width as u64).to_le_bytes());
-        hashed.extend_from_slice(&(height as u64).to_le_bytes());
-        hashed.extend_from_slice(&bytes);
-        let hash = hash_content(&hashed);
+        let hash = image_hash(width, height, &bytes);
         if already_seen(&hash) {
             return;
         }
@@ -118,15 +134,18 @@ pub fn start_polling(app: AppHandle, state: AppState) {
                 return;
             }
         };
-        let mut clipboard = match Clipboard::new() {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("clipboard-superpowers: clipboard init failed: {e}");
-                return;
-            }
-        };
+        // NOTE: Clipboard handle is created fresh each tick. Reusing one
+        // handle across the loop can hold the Windows clipboard open and
+        // wedge after lock contention — per-tick creation is cheap.
         loop {
-            capture_and_store(&mut clipboard, &app, &state, &conn);
+            match Clipboard::new() {
+                Ok(mut clipboard) => {
+                    capture_and_store(&mut clipboard, &app, &state, &conn);
+                }
+                Err(e) => {
+                    eprintln!("clipboard-superpowers: clipboard init failed: {e}");
+                }
+            }
             thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
         }
     });

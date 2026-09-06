@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Button } from "@/components/ui/button";
-import { api } from "@/lib/api";
+import { CardAction } from "@/components/CardShared";
+import { formatTime } from "@/lib/format";
+import { getCachedImage } from "@/lib/imageCache";
 import type { ClipboardItem } from "@/lib/types";
-import { Copy, Pin, PinOff, Trash2 } from "lucide-react";
+import { Copy, ImageIcon, Pin, PinOff, Trash2 } from "lucide-react";
 
 export function ImageCard({
   item,
@@ -20,10 +21,11 @@ export function ImageCard({
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .readImageBase64(item.content)
-      .then((b64) => {
-        if (!cancelled) setSrc(`data:image/png;base64,${b64}`);
+    setSrc(null);
+    setFailed(false);
+    getCachedImage(item.content)
+      .then((url) => {
+        if (!cancelled) setSrc(url);
       })
       .catch(() => {
         if (!cancelled) setFailed(true);
@@ -35,70 +37,54 @@ export function ImageCard({
 
   return (
     <div
-      className="group rounded-lg border bg-card p-2.5 transition-colors hover:border-primary/40 cursor-pointer"
+      className="group min-w-0 cursor-pointer rounded-xl border border-border/80 bg-card/85 p-3 shadow-sm transition-all duration-200 hover:-translate-y-px hover:border-primary/40 hover:shadow-md"
       onClick={onCopy}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onCopy();
+        }
+      }}
+      role="button"
+      tabIndex={0}
       title="Click to copy image"
     >
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex min-w-0 items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
           {item.pinned && <Pin className="size-3 text-amber-400" />}
-          <span className="text-[10px] uppercase tracking-wider text-green-400">image</span>
+          <ImageIcon className="size-3 text-emerald-400" />
+          <span className="text-[10px] font-medium uppercase tracking-wider text-emerald-400">image</span>
         </div>
-        <span className="text-[10px] text-muted-foreground">
-          {formatTime(item.created_at)}
-        </span>
+        <div className="flex items-center gap-0.5">
+          <span className="mr-1 text-[10px] text-muted-foreground">{formatTime(item.created_at)}</span>
+          <CardAction label="Copy image" onClick={onCopy}><Copy /></CardAction>
+          <CardAction label={item.pinned ? "Unpin image" : "Pin image"} onClick={onPin}>
+            {item.pinned ? <PinOff /> : <Pin />}
+          </CardAction>
+          <CardAction label="Delete image" onClick={onDelete} destructive><Trash2 /></CardAction>
+        </div>
       </div>
-      <div className="mt-1.5 flex h-20 items-center justify-center overflow-hidden rounded bg-muted">
+      <div className="relative mt-2 flex h-36 items-center justify-center overflow-hidden rounded-lg border border-border/60 bg-muted/70">
         {src ? (
-          <img src={src} alt="clipboard image" className="max-h-20 max-w-full object-contain" />
+          <>
+            <img
+              src={src}
+              alt=""
+              aria-hidden="true"
+              className="absolute inset-0 h-full w-full scale-110 object-cover opacity-20 blur-2xl"
+            />
+            <img
+              src={src}
+              alt="Clipboard image"
+              className="relative h-full w-full object-contain p-1.5 drop-shadow-md"
+            />
+          </>
         ) : failed ? (
           <span className="text-xs text-muted-foreground">image unavailable</span>
         ) : (
           <span className="text-xs text-muted-foreground">loading…</span>
         )}
       </div>
-      <div className="mt-1.5 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-        <Button
-          size="sm"
-          variant="secondary"
-          className="h-6 px-2 text-[11px]"
-          onClick={(e) => {
-            e.stopPropagation();
-            onCopy();
-          }}
-        >
-          <Copy className="size-3" /> Copy
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-6 px-2 text-[11px]"
-          onClick={(e) => {
-            e.stopPropagation();
-            onPin();
-          }}
-        >
-          {item.pinned ? <PinOff className="size-3" /> : <Pin className="size-3" />}
-          {item.pinned ? "Unpin" : "Pin"}
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          className="ml-auto h-6 px-2 text-[11px] text-destructive hover:text-destructive"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-        >
-          <Trash2 className="size-3" />
-        </Button>
-      </div>
     </div>
   );
-}
-
-function formatTime(rfc3339: string): string {
-  const d = new Date(rfc3339);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }

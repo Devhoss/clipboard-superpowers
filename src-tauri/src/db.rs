@@ -128,10 +128,12 @@ pub fn get_all_items(conn: &Connection, limit: i64) -> Result<Vec<ClipboardItem>
 }
 
 pub fn search_items(conn: &Connection, query: &str, limit: i64) -> Result<Vec<ClipboardItem>> {
-    let pattern = format!("%{}%", query);
+    // Escape LIKE wildcards so searching "100%" doesn't match "100X".
+    let escaped = query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    let pattern = format!("%{escaped}%");
     let sql = format!(
         "SELECT {ITEM_COLUMNS} FROM clipboard_history
-         WHERE content LIKE ?1 ORDER BY pinned DESC, created_at DESC LIMIT ?2"
+         WHERE content LIKE ?1 ESCAPE '\\' ORDER BY pinned DESC, created_at DESC LIMIT ?2"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![pattern, limit], row_to_item)?;
@@ -227,5 +229,15 @@ mod tests {
         assert!(get_all_items(&conn, 1000).unwrap()[0].pinned);
         assert_eq!(delete_item(&conn, out.id).unwrap(), 1);
         assert!(get_all_items(&conn, 1000).unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_treats_percent_and_underscore_literally() {
+        let conn = open_in_memory_db().unwrap();
+        insert_item(&conn, &item("100% legit", "2026-01-01T00:00:00Z"), 1000).unwrap();
+        insert_item(&conn, &item("100X legit", "2026-01-02T00:00:00Z"), 1000).unwrap();
+        let hits = search_items(&conn, "100%", 200).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].content, "100% legit");
     }
 }

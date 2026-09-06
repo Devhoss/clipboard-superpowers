@@ -1,5 +1,7 @@
-import { Button } from "@/components/ui/button";
 import { categoryChipClass } from "@/components/CategoryFilter";
+import { CardAction } from "@/components/CardShared";
+import { cn } from "@/lib/utils";
+import { extractColor, formatTime } from "@/lib/format";
 import type { ClipboardItem } from "@/lib/types";
 import { Copy, Pin, PinOff, Trash2 } from "lucide-react";
 
@@ -18,76 +20,47 @@ export function ClipboardCard({
   const colorValue = isColor ? extractColor(item.content) : null;
   return (
     <div
-      className="group rounded-lg border bg-card p-2.5 transition-colors hover:border-primary/40 cursor-pointer"
+      className="group min-w-0 cursor-pointer rounded-xl border border-border/80 bg-card/85 p-3 shadow-sm transition-all duration-200 hover:-translate-y-px hover:border-primary/40 hover:shadow-md"
       onClick={onCopy}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onCopy();
+        }
+      }}
+      role="button"
+      tabIndex={0}
       title="Click to copy"
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5">
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1.5">
           {item.pinned && <Pin className="size-3 text-amber-400" />}
-          <span className={categoryChipClass(item.category)}>{item.category}</span>
+          <span className={cn(categoryChipClass(item.category), "font-medium")}>{item.category}</span>
           {colorValue && (
             <span
-              className="inline-block size-3 rounded-sm border"
+              className="inline-block size-4 shrink-0 rounded-md border border-white/20 shadow-sm"
               style={{ background: colorValue }}
             />
           )}
         </div>
-        <span className="text-[10px] text-muted-foreground">
-          {formatTime(item.created_at)}
-        </span>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <span className="mr-1 text-[10px] text-muted-foreground">{formatTime(item.created_at)}</span>
+          <CardAction label="Copy" onClick={onCopy}><Copy /></CardAction>
+          <CardAction label={item.pinned ? "Unpin" : "Pin"} onClick={onPin}>
+            {item.pinned ? <PinOff /> : <Pin />}
+          </CardAction>
+          <CardAction label="Delete" onClick={onDelete} destructive><Trash2 /></CardAction>
+        </div>
       </div>
-      <pre className="mt-1.5 max-h-20 overflow-hidden whitespace-pre-wrap break-words font-mono text-xs leading-snug">
+      <pre
+        className={cn(
+          "mt-2 line-clamp-3 whitespace-pre-wrap break-words text-[13px] leading-relaxed",
+          isColor || item.category === "code" ? "font-mono" : "font-sans font-medium",
+        )}
+      >
         {item.content.slice(0, 500)}
         {item.content.length > 500 ? "…" : ""}
       </pre>
-      <div className="mt-1.5 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-        <Button
-          size="sm"
-          variant="secondary"
-          className="h-6 px-2 text-[11px]"
-          onClick={(e) => {
-            e.stopPropagation();
-            onCopy();
-          }}
-        >
-          <Copy className="size-3" /> Copy
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-6 px-2 text-[11px]"
-          onClick={(e) => {
-            e.stopPropagation();
-            onPin();
-          }}
-        >
-          {item.pinned ? <PinOff className="size-3" /> : <Pin className="size-3" />}
-          {item.pinned ? "Unpin" : "Pin"}
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          className="ml-auto h-6 px-2 text-[11px] text-destructive hover:text-destructive"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-        >
-          <Trash2 className="size-3" />
-        </Button>
-      </div>
     </div>
   );
-}
-
-function extractColor(content: string): string | null {
-  const m = content.trim().match(/^(#[0-9a-fA-F]{3,8}|rgb\([^)]+\))$/);
-  return m ? m[1] : null;
-}
-
-function formatTime(rfc3339: string): string {
-  const d = new Date(rfc3339);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }

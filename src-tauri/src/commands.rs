@@ -64,24 +64,31 @@ pub fn toggle_pin(state: State<'_, AppState>, id: i64) -> Result<(), String> {
 
 #[tauri::command]
 pub fn copy_to_clipboard(state: State<'_, AppState>, text: String) -> Result<(), String> {
-    set_last_hash(&state.last_hash, &crate::categorize::hash_content(text.as_bytes()));
+    let hash = crate::categorize::hash_content(text.as_bytes());
     let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    cb.set_text(text).map_err(|e| e.to_string())
+    cb.set_text(text).map_err(|e| e.to_string())?;
+    // Only suppress re-capture after the write succeeded — otherwise the
+    // next legitimate poll of the same content would be swallowed.
+    set_last_hash(&state.last_hash, &hash);
+    Ok(())
 }
 
 #[tauri::command]
 pub fn copy_image_to_clipboard(state: State<'_, AppState>, path: String) -> Result<(), String> {
     let img = image::open(&path).map_err(|e| e.to_string())?.to_rgba8();
     let (width, height) = (img.width() as usize, img.height() as usize);
-    let hash = crate::categorize::hash_content(img.as_raw());
-    set_last_hash(&state.last_hash, &hash);
+    // MUST match clipboard::image_hash (dims + pixels), not raw pixels alone.
+    let hash = crate::clipboard::image_hash(width, height, img.as_raw());
+    let raw = img.into_raw();
     let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     cb.set_image(ImageData {
         width,
         height,
-        bytes: std::borrow::Cow::Owned(img.into_raw()),
+        bytes: std::borrow::Cow::Owned(raw),
     })
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    set_last_hash(&state.last_hash, &hash);
+    Ok(())
 }
 
 /// PNG bytes as base64 for rendering thumbnails in the webview.
