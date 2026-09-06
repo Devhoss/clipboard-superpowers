@@ -19,8 +19,9 @@ fn toggle_main_window(app: &tauri::AppHandle) {
         if visible && focused {
             let _ = win.hide();
         } else {
+            // NOTE: no win.center() here — the window stays where the user
+            // dragged it. Initial position comes from tauri.conf.json.
             let _ = win.show();
-            let _ = win.center();
             let _ = win.set_focus();
         }
     }

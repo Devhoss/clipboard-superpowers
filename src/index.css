@@ -125,13 +125,44 @@
   * {
     @apply border-border outline-ring/50;
     }
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
   body {
     @apply bg-background text-foreground;
-    transition: background-color 180ms ease, color 180ms ease;
+    /* No color transition here on purpose: theme swaps are driven by the
+       View Transitions cross-fade below, so surfaces never shimmer through
+       intermediate values. */
     }
   html {
     @apply font-sans;
     }
+
+/* Smooth theme cross-fade (View Transitions API, Chromium/WebView2).
+   The old snapshot fades out while the new one fades in — one coordinated
+   200ms move instead of dozens of staggered element transitions. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 200ms;
+  animation-timing-function: ease;
+}
+::view-transition-old(root) {
+  animation-name: theme-fade-out;
+}
+::view-transition-new(root) {
+  animation-name: theme-fade-in;
+}
+@keyframes theme-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes theme-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
 
   * {
     scrollbar-width: thin;

@@ -33,6 +33,7 @@ function App() {
   const [visibleCount, setVisibleCount] = useState(50);
   const inputRef = useRef<HTMLInputElement>(null);
   const requestId = useRef(0);
+  const themeWrapped = useRef(false);
 
   const fetchFor = useCallback((query: string) => {
     const id = ++requestId.current;
@@ -75,18 +76,31 @@ function App() {
   }, []);
 
   // popup behavior: Esc hides, losing focus hides, gaining focus refocuses search.
-  // Single onFocusChanged subscription handles both directions — the old
-  // separate `tauri://focus` listener never fired reliably.
+  // Hide is debounced + re-verified: the synthetic title-bar mousedown Tauri
+  // sends for drag-region dragging can fire a transient blur — hiding
+  // instantly would kill the window on the click that should start a drag.
   useEffect(() => {
     if (!appWindow) return;
+    const win = appWindow;
+    let hideTimer: ReturnType<typeof setTimeout> | null = null;
 
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") appWindow.hide().catch(console.error);
+      if (e.key === "Escape") win.hide().catch(console.error);
     };
     window.addEventListener("keydown", onKey);
-    const focusUnlisten = appWindow.onFocusChanged(({ payload: focused }) => {
+    const focusUnlisten = win.onFocusChanged(({ payload: focused }) => {
+      if (hideTimer) {
+        clearTimeout(hideTimer);
+        hideTimer = null;
+      }
       if (!focused) {
-        appWindow.hide().catch(console.error);
+        hideTimer = setTimeout(() => {
+          // Still unfocused after the grace window? Then it's a real
+          // click-away — hide. Transient drag blips re-focus first.
+          win.isFocused().then((focused) => {
+            if (!focused) win.hide().catch(console.error);
+          }).catch(() => win.hide().catch(console.error));
+        }, 150);
       } else {
         setSearch("");
         // fetchFor("") refreshes + resets pagination
@@ -97,21 +111,43 @@ function App() {
     });
     return () => {
       window.removeEventListener("keydown", onKey);
+      if (hideTimer) clearTimeout(hideTimer);
       focusUnlisten.then((fn) => fn());
     };
   }, [fetchFor]);
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const updateAppearance = () => {
-      const isDark = theme === "dark" || (theme === "system" && media.matches);
+    const apply = (mode: ThemeMode) => {
+      const isDark = mode === "dark" || (mode === "system" && media.matches);
       document.documentElement.classList.toggle("dark", isDark);
+      document.documentElement.style.colorScheme = isDark ? "dark" : "light";
     };
 
-    updateAppearance();
     localStorage.setItem(THEME_STORAGE_KEY, theme);
-    media.addEventListener("change", updateAppearance);
-    return () => media.removeEventListener("change", updateAppearance);
+
+    const doc = document as Document & {
+      startViewTransition?: (cb: () => void) => void;
+    };
+    // First mount: pre-paint script already set the class — just sync
+    // colorScheme, no transition.
+    if (!themeWrapped.current) {
+      themeWrapped.current = true;
+      const isDark = document.documentElement.classList.contains("dark");
+      document.documentElement.style.colorScheme = isDark ? "dark" : "light";
+    } else if (doc.startViewTransition) {
+      // Smooth cross-fade via View Transitions (Chromium/WebView2). Falls
+      // back to an instant swap where unsupported — no staggered shimmer.
+      doc.startViewTransition(() => apply(theme));
+    } else {
+      apply(theme);
+    }
+
+    // Only follow the OS while the user chose "system".
+    if (theme !== "system") return;
+    const onChange = () => apply("system");
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
   }, [theme]);
 
   const filtered = useMemo(
@@ -128,11 +164,11 @@ function App() {
   return (
     <main className="flex h-screen min-w-0 flex-col gap-2 overflow-hidden bg-background p-2 text-foreground antialiased">
       <div
-        className="flex h-6 shrink-0 items-center justify-between select-none"
+        data-tauri-drag-region
+        className="flex h-6 shrink-0 cursor-grab items-center justify-between active:cursor-grabbing select-none"
       >
         <div
-          data-tauri-drag-region
-          className="flex min-w-0 cursor-grab items-center gap-2"
+          className="flex min-w-0 items-center gap-2"
         >
           <span data-tauri-drag-region className="size-1.5 rounded-full bg-primary/80 shadow-[0_0_8px_color-mix(in_oklch,var(--primary),transparent_35%)]" />
           <span data-tauri-drag-region className="text-xs font-semibold tracking-[-0.01em]">Clipboard</span>
