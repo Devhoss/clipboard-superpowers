@@ -92,7 +92,7 @@ pub fn insert_item(conn: &Connection, item: &ClipboardItem, max_items: i64) -> R
 }
 
 /// Delete oldest unpinned items beyond the cap.
-fn prune_old_items(conn: &Connection, max_items: i64) -> Result<()> {
+pub fn prune_old_items(conn: &Connection, max_items: i64) -> Result<()> {
     conn.execute(
         "DELETE FROM clipboard_history
          WHERE pinned = 0 AND id NOT IN (

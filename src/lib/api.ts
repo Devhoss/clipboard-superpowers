@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ClipboardItem } from "./types";
+import type { ClipboardItem, AppSettings, HistoryStats } from "./types";
 
 export const api = {
   getHistory: (): Promise<ClipboardItem[]> => invoke("get_history"),
@@ -13,6 +13,12 @@ export const api = {
     invoke("copy_image_to_clipboard", { path }),
   readImageBase64: (path: string): Promise<string> =>
     invoke("read_image_base64", { path }),
+  getSettings: (): Promise<AppSettings> => invoke("get_settings"),
+  updateSettings: (settings: AppSettings): Promise<AppSettings> =>
+    invoke("update_settings", { settings }),
+  clearHistory: (delete_pinned: boolean): Promise<number> =>
+    invoke("clear_history", { delete_pinned }),
+  getStats: (): Promise<HistoryStats> => invoke("get_stats"),
 };
 
 export const EVENTS = {

@@ -12,3 +12,18 @@ export interface ClipboardItem {
 }
 
 export const CATEGORIES: Category[] = ["plain", "link", "code", "color", "email", "image"];
+
+export interface AppSettings {
+  hotkey: string;
+  max_items: number;
+  launch_on_login: boolean;
+  capture_text: boolean;
+  capture_images: boolean;
+  hide_on_blur: boolean;
+}
+
+export interface HistoryStats {
+  total: number;
+  pinned: number;
+  db_bytes: number;
+}

@@ -3,8 +3,10 @@ use base64::Engine as _;
 use rusqlite::OptionalExtension;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::clipboard::{suppress_hash, write_with_retry, AppState, MAX_ITEMS};
+use crate::clipboard::{suppress_hash, write_with_retry, AppState};
 use crate::db::{self, ClipboardItem};
+use crate::settings::{parse_hotkey, Settings};
+use serde::Serialize;
 
 fn with_conn<T>(
     state: &State<'_, AppState>,
@@ -16,15 +18,17 @@ fn with_conn<T>(
 
 #[tauri::command]
 pub fn get_history(state: State<'_, AppState>) -> Result<Vec<ClipboardItem>, String> {
-    with_conn(&state, |conn| db::get_all_items(conn, MAX_ITEMS))
+    let limit = state.settings.lock().unwrap().max_items;
+    with_conn(&state, |conn| db::get_all_items(conn, limit))
 }
 
 #[tauri::command]
 pub fn search_history(state: State<'_, AppState>, query: String) -> Result<Vec<ClipboardItem>, String> {
     let query = query.trim().to_string();
+    let limit = state.settings.lock().unwrap().max_items;
     with_conn(&state, |conn| {
         if query.is_empty() {
-            db::get_all_items(conn, MAX_ITEMS)
+            db::get_all_items(conn, limit)
         } else {
             db::search_items(conn, &query, 200)
         }
@@ -130,4 +134,84 @@ pub fn read_image_base64(state: State<'_, AppState>, path: String) -> Result<Str
     }
     let bytes = std::fs::read(resolved).map_err(|e| e.to_string())?;
     Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+#[tauri::command]
+pub fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
+    Ok(state.settings.lock().unwrap().clone())
+}
+
+#[tauri::command]
+pub fn update_settings(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    settings: Settings,
+) -> Result<Settings, String> {
+    // Validate BEFORE persisting anything.
+    parse_hotkey(&settings.hotkey)?;
+    let mut s = settings;
+    s.max_items = s.max_items.clamp(100, 5000);
+    s.save(&state.settings_path)?;
+    *state.settings.lock().unwrap() = s.clone();
+    // Apply live: hotkey re-register, autostart toggle, prune to new cap.
+    crate::apply_hotkey(&app, &s.hotkey)?;
+    crate::apply_autostart(&app, s.launch_on_login)?;
+    with_conn(&state, |conn| {
+        db::prune_old_items(conn, s.max_items)?;
+        Ok(())
+    })?;
+    Ok(s)
+}
+
+#[derive(Serialize)]
+pub struct HistoryStats {
+    pub total: i64,
+    pub pinned: i64,
+    pub db_bytes: u64,
+}
+
+#[tauri::command]
+pub fn get_stats(state: State<'_, AppState>) -> Result<HistoryStats, String> {
+    with_conn(&state, |conn| {
+        let total: i64 =
+            conn.query_row("SELECT COUNT(*) FROM clipboard_history", [], |r| r.get(0))?;
+        let pinned: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM clipboard_history WHERE pinned = 1",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok((total, pinned))
+    })
+    .map(|(total, pinned)| {
+        let db_bytes = std::fs::metadata(&state.db_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        HistoryStats { total, pinned, db_bytes }
+    })
+}
+
+/// Delete history rows (and their orphaned image files). Returns row count.
+#[tauri::command]
+pub fn clear_history(state: State<'_, AppState>, delete_pinned: bool) -> Result<i64, String> {
+    with_conn(&state, |conn| {
+        let flag = if delete_pinned { 1 } else { 0 };
+        let paths: Vec<String> = conn
+            .prepare(
+                "SELECT content FROM clipboard_history
+                 WHERE kind = 'image' AND (?1 = 1 OR pinned = 0)",
+            )?
+            .query_map([flag], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let deleted = conn.execute(
+            "DELETE FROM clipboard_history WHERE ?1 = 1 OR pinned = 0",
+            [flag],
+        )? as i64;
+        for p in paths {
+            let path = std::path::Path::new(&p);
+            if path.parent() == Some(&state.images_dir) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        Ok(deleted)
+    })
 }

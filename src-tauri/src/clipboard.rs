@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::categorize::{categorize, hash_content};
 use crate::db::{insert_item, open_db, ClipboardItem};
+use crate::settings::Settings;
 
 pub const POLL_INTERVAL_MS: u64 = 300;
 pub const MAX_ITEMS: i64 = 1000;
@@ -67,7 +68,13 @@ pub fn write_with_retry<T>(
 pub struct AppState {
     pub db_path: PathBuf,
     pub images_dir: PathBuf,
+    pub settings_path: PathBuf,
+    pub settings: Arc<Mutex<Settings>>,
     pub last_hash: LastHash,
+}
+
+fn max_items(state: &AppState) -> i64 {
+    state.settings.lock().unwrap().max_items
 }
 
 pub fn ensure_app_dirs(app: &AppHandle) -> (PathBuf, PathBuf) {
@@ -107,7 +114,7 @@ fn store_and_emit(
     item: ClipboardItem,
     hash: String,
 ) {
-    match insert_item(conn, &item, MAX_ITEMS) {
+    match insert_item(conn, &item, max_items(state)) {
         Ok(outcome) => {
             suppress_hash(state, &hash);
             let mut emitted = item;
@@ -142,31 +149,39 @@ fn read_clipboard(state: &AppState) -> Option<Captured> {
     // NOTE: text wins when the clipboard holds both text and an image
     // (common when copying images from browsers). Documented v1 tradeoff —
     // image is only stored when get_text() fails.
-    if let Ok(text) = clipboard.get_text() {
-        if text.trim().is_empty() {
-            return None;
+    let (want_text, want_images) = {
+        let s = state.settings.lock().unwrap();
+        (s.capture_text, s.capture_images)
+    };
+    if want_text {
+        if let Ok(text) = clipboard.get_text() {
+            if text.trim().is_empty() {
+                return None;
+            }
+            let hash = hash_content(text.as_bytes());
+            // Time-bound suppression: our own writes are ignored for ~2s, but
+            // an identical copy after that is a genuine re-copy and must bump.
+            if seen_recently(state, &hash) {
+                return None;
+            }
+            return Some(Captured::Text { text, hash });
         }
-        let hash = hash_content(text.as_bytes());
-        // Time-bound suppression: our own writes are ignored for ~2s, but an
-        // identical copy after that is a genuine re-copy and must bump to top.
-        if seen_recently(state, &hash) {
-            return None;
-        }
-        Some(Captured::Text { text, hash })
-    } else if let Ok(ImageData { width, height, bytes }) = clipboard.get_image() {
-        let hash = image_hash(width, height, &bytes);
-        if seen_recently(state, &hash) {
-            return None;
-        }
-        Some(Captured::Image {
-            width,
-            height,
-            bytes: bytes.into_owned(),
-            hash,
-        })
-    } else {
-        None
     }
+    if want_images {
+        if let Ok(ImageData { width, height, bytes }) = clipboard.get_image() {
+            let hash = image_hash(width, height, &bytes);
+            if seen_recently(state, &hash) {
+                return None;
+            }
+            return Some(Captured::Image {
+                width,
+                height,
+                bytes: bytes.into_owned(),
+                hash,
+            });
+        }
+    }
+    None
 }
 
 fn capture_and_store(

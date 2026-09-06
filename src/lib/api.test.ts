@@ -43,4 +43,32 @@ describe("api", () => {
       path: "C:\\img\\a.png",
     });
   });
+
+  it("calls get_settings", async () => {
+    await api.getSettings();
+    expect(mockedInvoke).toHaveBeenCalledWith("get_settings");
+  });
+
+  it("passes settings to update_settings", async () => {
+    const s = {
+      hotkey: "Ctrl+Alt+V",
+      max_items: 500,
+      launch_on_login: false,
+      capture_text: true,
+      capture_images: false,
+      hide_on_blur: true,
+    };
+    await api.updateSettings(s);
+    expect(mockedInvoke).toHaveBeenCalledWith("update_settings", { settings: s });
+  });
+
+  it("passes delete_pinned to clear_history", async () => {
+    await api.clearHistory(true);
+    expect(mockedInvoke).toHaveBeenCalledWith("clear_history", { delete_pinned: true });
+  });
+
+  it("calls get_stats", async () => {
+    await api.getStats();
+    expect(mockedInvoke).toHaveBeenCalledWith("get_stats");
+  });
 });

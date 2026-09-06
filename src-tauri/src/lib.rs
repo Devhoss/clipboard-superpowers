@@ -2,6 +2,7 @@ pub mod categorize;
 pub mod clipboard;
 pub mod commands;
 pub mod db;
+pub mod settings;
 
 use std::sync::{Arc, Mutex};
 
@@ -10,7 +11,9 @@ use tauri::{
     Manager, WindowEvent,
 };
 use tauri_plugin_autostart::MacosLauncher;
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+
+use settings::Settings;
 
 fn toggle_main_window(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
@@ -27,6 +30,31 @@ fn toggle_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// (Re)register the toggle hotkey. Unregisters everything of ours first, so
+/// a changed hotkey never leaves the old one behind. Boot-safe: logs instead
+/// of failing when another app already holds the combo.
+pub fn apply_hotkey(app: &tauri::AppHandle, hotkey: &str) -> Result<(), String> {
+    let shortcut = settings::parse_hotkey(hotkey)?;
+    let _ = app.global_shortcut().unregister_all();
+    app.global_shortcut()
+        .on_shortcut(shortcut, |app, _shortcut, event| {
+            if event.state() == ShortcutState::Pressed {
+                toggle_main_window(app);
+            }
+        })
+        .map_err(|e| e.to_string())
+}
+
+pub fn apply_autostart(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let launcher = app.autolaunch();
+    if enabled {
+        launcher.enable().map_err(|e| e.to_string())
+    } else {
+        launcher.disable().map_err(|e| e.to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -38,33 +66,38 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let (db_path, images_dir) = clipboard::ensure_app_dirs(app.handle());
+            let settings_path = app
+                .handle()
+                .path()
+                .app_data_dir()
+                .expect("failed to resolve app data dir")
+                .join("settings.json");
+            let settings = Settings::load(&settings_path);
             let state = clipboard::AppState {
                 db_path,
                 images_dir,
+                settings_path,
+                settings: Arc::new(Mutex::new(settings.clone())),
                 last_hash: Arc::new(Mutex::new(None)),
             };
             clipboard::start_polling(app.handle().clone(), state.clone());
             app.manage(state);
 
+            // Hotkey + autostart come from settings. Boot-safe: a taken
+            // hotkey logs instead of killing startup.
+            if let Err(e) = apply_hotkey(app.handle(), &settings.hotkey) {
+                eprintln!("clipboard-superpowers: hotkey register failed: {e}");
+            }
             #[cfg(desktop)]
-            {
-                use tauri_plugin_autostart::ManagerExt;
-
-                let toggle = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyV);
-                app.global_shortcut()
-                    .on_shortcut(toggle, |app, _shortcut, event| {
-                        if event.state() == ShortcutState::Pressed {
-                            toggle_main_window(app);
-                        }
-                    })?;
-
-                let _ = app.autolaunch().enable();
+            if let Err(e) = apply_autostart(app.handle(), settings.launch_on_login) {
+                eprintln!("clipboard-superpowers: autostart failed: {e}");
             }
 
+            let toggle_label = format!("Show / Hide ({})", settings.hotkey);
             let toggle_item = MenuItem::with_id(
                 app,
                 "toggle",
-                "Show / Hide (Ctrl+Alt+V)",
+                &toggle_label,
                 true,
                 None::<&str>,
             )?;
@@ -72,7 +105,7 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&toggle_item, &quit_item])?;
             tauri::tray::TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().expect("window icon").clone())
-                .tooltip("Clipboard Superpowers (Ctrl+Alt+V)")
+                .tooltip(format!("Clipboard Superpowers ({})", settings.hotkey).as_str())
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -99,6 +132,10 @@ pub fn run() {
             commands::copy_to_clipboard,
             commands::copy_image_to_clipboard,
             commands::read_image_base64,
+            commands::get_settings,
+            commands::update_settings,
+            commands::get_stats,
+            commands::clear_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

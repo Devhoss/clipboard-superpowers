@@ -4,9 +4,11 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { SearchBar } from "./components/SearchBar";
 import { CategoryFilter } from "./components/CategoryFilter";
 import { HistoryList } from "./components/HistoryList";
+import { SettingsPanel } from "./components/SettingsPanel";
 import { ThemeSwitcher, type ThemeMode } from "./components/ThemeSwitcher";
 import { api, EVENTS } from "./lib/api";
-import type { ClipboardItem } from "./lib/types";
+import type { AppSettings, ClipboardItem } from "./lib/types";
+import { ArrowLeft, Settings as SettingsIcon } from "lucide-react";
 
 // Keep the renderer usable while it is being previewed in a regular browser.
 // Tauri injects this bridge before the app loads, but it is intentionally absent
@@ -31,6 +33,11 @@ function App() {
   const [category, setCategory] = useState("all");
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const [visibleCount, setVisibleCount] = useState(50);
+  const [view, setView] = useState<"list" | "settings">("list");
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const hideOnBlurRef = useRef(true);
   const inputRef = useRef<HTMLInputElement>(null);
   const requestId = useRef(0);
   const themeWrapped = useRef(false);
@@ -63,6 +70,16 @@ function App() {
   }, [debounced, fetchFor]);
 
   useEffect(() => {
+    api
+      .getSettings()
+      .then((s) => {
+        setSettings(s);
+        hideOnBlurRef.current = s.hide_on_blur;
+      })
+      .catch(console.error);
+  }, []);
+
+  useEffect(() => {
     const unlisten = listen<ClipboardItem>(EVENTS.newItem, (e) => {
       const item = e.payload;
       setItems((prev) => {
@@ -85,7 +102,13 @@ function App() {
     let hideTimer: ReturnType<typeof setTimeout> | null = null;
 
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") win.hide().catch(console.error);
+      if (e.key !== "Escape") return;
+      // In settings, Esc goes back first — only hides from the list.
+      if (viewRef.current === "settings") {
+        setView("list");
+      } else {
+        win.hide().catch(console.error);
+      }
     };
     window.addEventListener("keydown", onKey);
     const focusUnlisten = win.onFocusChanged(({ payload: focused }) => {
@@ -94,6 +117,8 @@ function App() {
         hideTimer = null;
       }
       if (!focused) {
+        // hide_on_blur off = popup stays until Esc or the hotkey.
+        if (!hideOnBlurRef.current) return;
         hideTimer = setTimeout(() => {
           // Still unfocused after the grace window? Then it's a real
           // click-away — hide. Transient drag blips re-focus first.
@@ -102,6 +127,8 @@ function App() {
           }).catch(() => win.hide().catch(console.error));
         }, 150);
       } else {
+        // Always land on the list when summoned — never a stale settings page.
+        setView("list");
         setSearch("");
         // fetchFor("") refreshes + resets pagination
         fetchFor("");
@@ -173,42 +200,82 @@ function App() {
         data-tauri-drag-region
         className="flex h-6 shrink-0 cursor-grab items-center justify-between active:cursor-grabbing select-none"
       >
-        <div
-          className="flex min-w-0 items-center gap-2"
-        >
-          <span data-tauri-drag-region className="size-1.5 rounded-full bg-primary/80 shadow-[0_0_8px_color-mix(in_oklch,var(--primary),transparent_35%)]" />
-          <span data-tauri-drag-region className="text-xs font-semibold tracking-[-0.01em]">Clipboard</span>
-        </div>
+        {view === "settings" ? (
+          <button
+            type="button"
+            onClick={() => setView("list")}
+            aria-label="Back to history"
+            className="flex min-w-0 items-center gap-1.5 text-xs font-semibold text-foreground"
+          >
+            <ArrowLeft className="size-3.5" />
+            <span>Settings</span>
+          </button>
+        ) : (
+          <div className="flex min-w-0 items-center gap-2">
+            <span data-tauri-drag-region className="size-1.5 rounded-full bg-primary/80 shadow-[0_0_8px_color-mix(in_oklch,var(--primary),transparent_35%)]" />
+            <span data-tauri-drag-region className="text-xs font-semibold tracking-[-0.01em]">Clipboard</span>
+          </div>
+        )}
         <div className="flex shrink-0 items-center gap-2">
           <span className="text-[10px] text-muted-foreground">
-            Ctrl+Alt+V
+            {settings?.hotkey ?? "Ctrl+Alt+V"}
           </span>
+          {view === "list" && (
+            <button
+              type="button"
+              onClick={() => setView("settings")}
+              aria-label="Open settings"
+              className="grid size-5 place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            >
+              <SettingsIcon className="size-3" strokeWidth={1.8} />
+            </button>
+          )}
           <ThemeSwitcher value={theme} onChange={setTheme} />
         </div>
       </div>
-      <div className="shrink-0 space-y-2">
-        <SearchBar value={search} onChange={setSearch} inputRef={inputRef} />
-        <CategoryFilter value={category} onChange={handleCategory} />
-      </div>
-      {filtered.length > 0 ? (
+      {view === "settings" ? (
+        settings ? (
+          <SettingsPanel
+            initial={settings}
+            onSaved={(s) => {
+              setSettings(s);
+              hideOnBlurRef.current = s.hide_on_blur;
+              refresh();
+            }}
+            onCleared={refresh}
+          />
+        ) : (
+          <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+            Loading settings…
+          </div>
+        )
+      ) : (
         <>
-          <HistoryList items={visible} onMutate={refresh} onCopyMove={moveToTop} />
-          {visibleCount < filtered.length && (
-            <button
-              type="button"
-              onClick={() => setVisibleCount((n) => n + 50)}
-              className="shrink-0 rounded-lg border border-border/70 bg-muted/60 px-3 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"
-            >
-              Show more ({filtered.length - visibleCount} remaining)
-            </button>
+          <div className="shrink-0 space-y-2">
+            <SearchBar value={search} onChange={setSearch} inputRef={inputRef} />
+            <CategoryFilter value={category} onChange={handleCategory} />
+          </div>
+          {filtered.length > 0 ? (
+            <>
+              <HistoryList items={visible} onMutate={refresh} onCopyMove={moveToTop} />
+              {visibleCount < filtered.length && (
+                <button
+                  type="button"
+                  onClick={() => setVisibleCount((n) => n + 50)}
+                  className="shrink-0 rounded-lg border border-border/70 bg-muted/60 px-3 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                >
+                  Show more ({filtered.length - visibleCount} remaining)
+                </button>
+              )}
+            </>
+          ) : (
+            <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+              {search || category !== "all"
+                ? "No matches."
+                : "No clips yet — copy something!"}
+            </div>
           )}
         </>
-      ) : (
-        <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-          {search || category !== "all"
-            ? "No matches."
-            : "No clips yet — copy something!"}
-        </div>
       )}
     </main>
   );
