@@ -89,6 +89,8 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
+            let t0 = std::time::Instant::now();
+            eprintln!("clipboard-superpowers: setup start");
             let (db_path, images_dir) = clipboard::ensure_app_dirs(app.handle());
             let settings_path = app
                 .handle()
@@ -97,6 +99,7 @@ pub fn run() {
                 .expect("failed to resolve app data dir")
                 .join("settings.json");
             let settings = Settings::load(&settings_path);
+            eprintln!("clipboard-superpowers: dirs+settings +{:?}", t0.elapsed());
             let state = clipboard::AppState {
                 db_path,
                 images_dir,
@@ -106,18 +109,22 @@ pub fn run() {
             };
             clipboard::start_polling(app.handle().clone(), state.clone());
             app.manage(state);
+            eprintln!("clipboard-superpowers: polling spawned +{:?}", t0.elapsed());
 
             // Hotkey + autostart + window mode come from settings. Boot-safe:
             // a taken hotkey logs instead of killing startup.
-            if let Err(e) = apply_hotkey(app.handle(), &settings.hotkey) {
-                eprintln!("clipboard-superpowers: hotkey register failed: {e}");
+            match apply_hotkey(app.handle(), &settings.hotkey) {
+                Ok(()) => eprintln!("clipboard-superpowers: hotkey ok +{:?}", t0.elapsed()),
+                Err(e) => eprintln!("clipboard-superpowers: hotkey FAILED ({e}) +{:?}", t0.elapsed()),
             }
             #[cfg(desktop)]
             if let Err(e) = apply_autostart(app.handle(), settings.launch_on_login) {
-                eprintln!("clipboard-superpowers: autostart failed: {e}");
+                eprintln!("clipboard-superpowers: autostart FAILED ({e}) +{:?}", t0.elapsed());
+            } else {
+                eprintln!("clipboard-superpowers: autostart +{:?}", t0.elapsed());
             }
             if let Err(e) = apply_window_mode(app.handle(), settings.hide_on_blur) {
-                eprintln!("clipboard-superpowers: window mode failed: {e}");
+                eprintln!("clipboard-superpowers: window-mode FAILED ({e}) +{:?}", t0.elapsed());
             }
 
             let toggle_label = format!("Show / Hide ({})", settings.hotkey);
@@ -153,6 +160,7 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            eprintln!("clipboard-superpowers: tray ready +{:?}", t0.elapsed());
 
             Ok(())
         })
