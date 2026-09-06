@@ -101,4 +101,4 @@ Cloud sync · rich-text/HTML clipboard · file drops · plugin system · configu
 
 ## License
 
-Private — Hoss / Operation Winter. No distribution without permission.
+MIT — see [LICENSE](LICENSE). Copyright (c) 2026 Hoss (Operation Winter).
