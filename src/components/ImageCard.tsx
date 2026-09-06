@@ -37,7 +37,7 @@ export function ImageCard({
 
   return (
     <div
-      className="group min-w-0 cursor-pointer rounded-xl border border-border/80 bg-card/85 p-3 shadow-sm transition-all duration-200 hover:-translate-y-px hover:border-primary/40 hover:shadow-md"
+      className="group min-w-0 cursor-pointer rounded-xl border border-border/80 bg-card/85 p-3 shadow-sm transition-[border-color,box-shadow,background-color] duration-200 hover:border-primary/40 hover:shadow-md"
       onClick={onCopy}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {

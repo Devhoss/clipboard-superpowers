@@ -1,9 +1,9 @@
 use arboard::ImageData;
 use base64::Engine as _;
 use rusqlite::OptionalExtension;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
-use crate::clipboard::{AppState, LastHash, MAX_ITEMS};
+use crate::clipboard::{suppress_hash, AppState, MAX_ITEMS};
 use crate::db::{self, ClipboardItem};
 
 fn with_conn<T>(
@@ -63,18 +63,37 @@ pub fn toggle_pin(state: State<'_, AppState>, id: i64) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn copy_to_clipboard(state: State<'_, AppState>, text: String) -> Result<(), String> {
+pub fn copy_to_clipboard(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    text: String,
+) -> Result<(), String> {
     let hash = crate::categorize::hash_content(text.as_bytes());
     let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     cb.set_text(text).map_err(|e| e.to_string())?;
-    // Only suppress re-capture after the write succeeded — otherwise the
-    // next legitimate poll of the same content would be swallowed.
-    set_last_hash(&state.last_hash, &hash);
+    // Re-copy = most recent: bump the row so the card jumps to the top
+    // immediately instead of waiting for the next poll tick.
+    let conn = db::open_db(&state.db_path.to_string_lossy()).map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    match db::touch_by_hash(&conn, &hash, &now).map_err(|e| e.to_string())? {
+        Some(row) => {
+            // Suppress only our own write (time-bound); the bump is done.
+            suppress_hash(&state, &hash);
+            let _ = app.emit("clipboard:new-item", &row);
+        }
+        // Not in history — leave last_hash alone so the poller inserts it
+        // as a fresh row on the next tick.
+        None => {}
+    }
     Ok(())
 }
 
 #[tauri::command]
-pub fn copy_image_to_clipboard(state: State<'_, AppState>, path: String) -> Result<(), String> {
+pub fn copy_image_to_clipboard(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    path: String,
+) -> Result<(), String> {
     let img = image::open(&path).map_err(|e| e.to_string())?.to_rgba8();
     let (width, height) = (img.width() as usize, img.height() as usize);
     // MUST match clipboard::image_hash (dims + pixels), not raw pixels alone.
@@ -87,7 +106,15 @@ pub fn copy_image_to_clipboard(state: State<'_, AppState>, path: String) -> Resu
         bytes: std::borrow::Cow::Owned(raw),
     })
     .map_err(|e| e.to_string())?;
-    set_last_hash(&state.last_hash, &hash);
+    let conn = db::open_db(&state.db_path.to_string_lossy()).map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    match db::touch_by_hash(&conn, &hash, &now).map_err(|e| e.to_string())? {
+        Some(row) => {
+            suppress_hash(&state, &hash);
+            let _ = app.emit("clipboard:new-item", &row);
+        }
+        None => {}
+    }
     Ok(())
 }
 
@@ -100,8 +127,4 @@ pub fn read_image_base64(state: State<'_, AppState>, path: String) -> Result<Str
     }
     let bytes = std::fs::read(resolved).map_err(|e| e.to_string())?;
     Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
-}
-
-fn set_last_hash(last_hash: &LastHash, hash: &str) {
-    *last_hash.lock().unwrap() = Some(hash.to_string());
 }

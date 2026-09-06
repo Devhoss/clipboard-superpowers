@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arboard::{Clipboard, ImageData};
 use chrono::Utc;
@@ -12,9 +12,26 @@ use crate::db::{insert_item, open_db, ClipboardItem};
 
 pub const POLL_INTERVAL_MS: u64 = 300;
 pub const MAX_ITEMS: i64 = 1000;
+/// How long our own clipboard writes are ignored by the poller. Our write
+/// lands within a tick or two (300ms); after the window expires an identical
+/// external copy counts as a genuine re-copy and bumps to the top.
+pub const SUPPRESS_WINDOW_SECS: u64 = 2;
 
 /// Shared so `copy_to_clipboard` can suppress re-capturing our own writes.
-pub type LastHash = Arc<Mutex<Option<String>>>;
+/// Time-bound: a permanent hash would swallow legitimate re-copies of the
+/// same content forever (copy X twice → second copy ignored).
+pub type LastHash = Arc<Mutex<Option<(String, Instant)>>>;
+
+pub fn suppress_hash(state: &AppState, hash: &str) {
+    *state.last_hash.lock().unwrap() = Some((hash.to_string(), Instant::now()));
+}
+
+fn seen_recently(state: &AppState, hash: &str) -> bool {
+    match &*state.last_hash.lock().unwrap() {
+        Some((h, t)) => h == hash && t.elapsed().as_secs() < SUPPRESS_WINDOW_SECS,
+        None => false,
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -62,7 +79,7 @@ fn store_and_emit(
 ) {
     match insert_item(conn, &item, MAX_ITEMS) {
         Ok(outcome) => {
-            *state.last_hash.lock().unwrap() = Some(hash);
+            suppress_hash(state, &hash);
             let mut emitted = item;
             emitted.id = outcome.id;
             let _ = app.emit("clipboard:new-item", &emitted);
@@ -79,7 +96,9 @@ fn capture_and_store(
     state: &AppState,
     conn: &rusqlite::Connection,
 ) {
-    let already_seen = |hash: &str| state.last_hash.lock().unwrap().as_deref() == Some(hash);
+    // Time-bound suppression: our own writes are ignored for ~2s, but an
+    // identical copy after that is a genuine re-copy and must bump to top.
+    let already_seen = |hash: &str| seen_recently(state, hash);
 
     // NOTE: text wins when the clipboard holds both text and an image
     // (common when copying images from browsers). Documented v1 tradeoff —

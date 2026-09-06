@@ -27,7 +27,7 @@ export function HistoryList({
 
   return (
     <div className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto pr-1 [scrollbar-gutter:stable]">
-      <div className="flex w-full min-w-0 flex-col gap-2.5 pb-2">
+      <div className="flex w-full min-w-0 flex-col gap-2.5 px-0.5 pt-0.5 pb-2">
         {items.map((item) =>
           item.kind === "image" ? (
             <ImageCard

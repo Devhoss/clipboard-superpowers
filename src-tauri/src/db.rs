@@ -152,6 +152,22 @@ pub fn toggle_pin(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Refresh an existing row's timestamp by content hash (re-copy = most
+/// recent). Returns the updated row, or None when the hash isn't stored.
+pub fn touch_by_hash(conn: &Connection, hash: &str, now: &str) -> Result<Option<ClipboardItem>> {
+    let updated = conn.execute(
+        "UPDATE clipboard_history SET created_at = ?1 WHERE content_hash = ?2",
+        params![now, hash],
+    )?;
+    if updated == 0 {
+        return Ok(None);
+    }
+    let sql = format!("SELECT {ITEM_COLUMNS} FROM clipboard_history WHERE content_hash = ?1");
+    let mut stmt = conn.prepare(&sql)?;
+    let row = stmt.query_row(params![hash], row_to_item)?;
+    Ok(Some(row))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,5 +255,23 @@ mod tests {
         let hits = search_items(&conn, "100%", 200).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].content, "100% legit");
+    }
+
+    #[test]
+    fn touch_by_hash_bumps_timestamp_and_returns_row() {
+        let conn = open_in_memory_db().unwrap();
+        insert_item(&conn, &item("bump me", "2026-01-01T00:00:00Z"), 1000).unwrap();
+        insert_item(&conn, &item("other", "2026-01-02T00:00:00Z"), 1000).unwrap();
+        let touched = touch_by_hash(&conn, "hash-bump me", "2026-01-03T00:00:00Z").unwrap();
+        assert!(touched.is_some());
+        assert_eq!(touched.unwrap().created_at, "2026-01-03T00:00:00Z");
+        let items = get_all_items(&conn, 1000).unwrap();
+        assert_eq!(items[0].content, "bump me");
+    }
+
+    #[test]
+    fn touch_by_hash_returns_none_for_unknown_hash() {
+        let conn = open_in_memory_db().unwrap();
+        assert!(touch_by_hash(&conn, "nope", "2026-01-03T00:00:00Z").unwrap().is_none());
     }
 }
