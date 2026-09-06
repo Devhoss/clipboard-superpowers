@@ -1,8 +1,9 @@
 [package]
 name = "clipboard-superpowers"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Clipboard Superpowers — fast offline clipboard manager (Tauri v2 + React)"
+authors = ["Hoss (Operation Winter)"]
+license = "MIT"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
