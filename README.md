@@ -95,9 +95,19 @@ src-tauri/capabilities/default.json  # explicit perms: autostart, global-shortcu
 - **DB locked** — WAL + 2s busy-timeout is on; don't open `clipboard.db` with an exclusive lock while running.
 - **Transparent-window GPU errors** — not used; window is solid (`transparent: false`).
 
-## Roadmap (not in v1)
+## Roadmap
 
-Cloud sync · rich-text/HTML clipboard · file drops · plugin system · configurable hotkey UI · OCR.
+Shipped: global hotkey (re-mappable in Settings) · settings surface (hotkey,
+capture toggles, history cap, autostart, hide-on-blur, clear, stats) · search
+· auto-categories · pins · image capture · tray + autostart · light/dark/system
+themes · optimistic instant copy · re-copy bumps to top.
+
+Next candidates: full keyboard control (arrows + Enter + Del) ·
+Enter-to-paste directly into the previous app · password/OTP hygiene
+(skip secrets or auto-expire them).
+
+Later ideas: cloud sync · rich-text/HTML clipboard (capture + paste formatted
+flavors, not just plain text) · file drops · plugin system · OCR for images.
 
 ## License
 
