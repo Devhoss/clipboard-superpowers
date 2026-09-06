@@ -55,6 +55,17 @@ pub fn apply_autostart(app: &tauri::AppHandle, enabled: bool) -> Result<(), Stri
     }
 }
 
+/// Keep the popup reachable. hide_on_blur off + not-on-top + no taskbar
+/// entry = a buried window with no mouse path back, so "don't hide" pins
+/// the window on top. Esc / hotkey still dismiss it instantly.
+pub fn apply_window_mode(app: &tauri::AppHandle, hide_on_blur: bool) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("main") {
+        win.set_always_on_top(!hide_on_blur)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -83,14 +94,17 @@ pub fn run() {
             clipboard::start_polling(app.handle().clone(), state.clone());
             app.manage(state);
 
-            // Hotkey + autostart come from settings. Boot-safe: a taken
-            // hotkey logs instead of killing startup.
+            // Hotkey + autostart + window mode come from settings. Boot-safe:
+            // a taken hotkey logs instead of killing startup.
             if let Err(e) = apply_hotkey(app.handle(), &settings.hotkey) {
                 eprintln!("clipboard-superpowers: hotkey register failed: {e}");
             }
             #[cfg(desktop)]
             if let Err(e) = apply_autostart(app.handle(), settings.launch_on_login) {
                 eprintln!("clipboard-superpowers: autostart failed: {e}");
+            }
+            if let Err(e) = apply_window_mode(app.handle(), settings.hide_on_blur) {
+                eprintln!("clipboard-superpowers: window mode failed: {e}");
             }
 
             let toggle_label = format!("Show / Hide ({})", settings.hotkey);
@@ -112,6 +126,18 @@ pub fn run() {
                     "toggle" => toggle_main_window(app),
                     "quit" => app.exit(0),
                     _ => {}
+                })
+                // Left-click toggles too: with no taskbar entry this is the
+                // mouse-only recovery path when the hotkey is forgotten or
+                // taken by another app. Right-click still opens the menu.
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        ..
+                    } = event
+                    {
+                        toggle_main_window(tray.app_handle());
+                    }
                 })
                 .build(app)?;
 

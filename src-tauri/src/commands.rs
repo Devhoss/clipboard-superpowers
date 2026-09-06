@@ -153,9 +153,10 @@ pub fn update_settings(
     s.max_items = s.max_items.clamp(100, 5000);
     s.save(&state.settings_path)?;
     *state.settings.lock().unwrap() = s.clone();
-    // Apply live: hotkey re-register, autostart toggle, prune to new cap.
+    // Apply live: hotkey re-register, autostart toggle, window mode, prune.
     crate::apply_hotkey(&app, &s.hotkey)?;
     crate::apply_autostart(&app, s.launch_on_login)?;
+    crate::apply_window_mode(&app, s.hide_on_blur)?;
     with_conn(&state, |conn| {
         db::prune_old_items(conn, s.max_items)?;
         Ok(())
