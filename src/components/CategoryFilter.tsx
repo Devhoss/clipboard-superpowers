@@ -13,15 +13,21 @@ export const CATEGORY_META: Record<Category, { label: string; plural: string; do
   image: { label: "Image", plural: "Images", dot: "#30d158", text: "text-green-300" },
 };
 
-export function CategoryLabel({ category }: { category: string }) {
+export function CategoryLabel({ category, dot }: { category: string; dot?: string | null }) {
   const meta = (CATEGORY_META as Record<string, (typeof CATEGORY_META)[Category]>)[category];
   if (!meta) return null;
+  // Optional exact-color override (color cards pass the real clipboard
+  // value) so the single dot is always the true color, not the generic pink.
+  const dotColor = dot ?? meta.dot;
+  // Hex supports an alpha suffix for the glow; rgb()/rgba() values don't,
+  // so they get a clean dot with no shadow instead of broken CSS.
+  const glow = dotColor.startsWith("#") ? `0 0 6px ${dotColor}66` : "none";
   return (
     <span className="flex min-w-0 items-center gap-1.5">
       <span
         aria-hidden="true"
         className="inline-block size-2 shrink-0 rounded-full"
-        style={{ background: meta.dot, boxShadow: `0 0 6px ${meta.dot}66` }}
+        style={{ background: dotColor, boxShadow: glow }}
       />
       <span className={cn("text-[10px] font-semibold uppercase tracking-wider", meta.text)}>
         {meta.label}

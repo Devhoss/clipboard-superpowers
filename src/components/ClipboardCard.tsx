@@ -35,13 +35,7 @@ export function ClipboardCard({
       <div className="flex min-w-0 items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
           {item.pinned && <Pin className="size-3 text-amber-400" />}
-          <CategoryLabel category={item.category} />
-          {colorValue && (
-            <span
-              className="inline-block size-4 shrink-0 rounded-md border border-white/20 shadow-sm"
-              style={{ background: colorValue }}
-            />
-          )}
+          <CategoryLabel category={item.category} dot={colorValue} />
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
           <span className="mr-1 text-[10px] text-muted-foreground">{formatTime(item.created_at)}</span>
