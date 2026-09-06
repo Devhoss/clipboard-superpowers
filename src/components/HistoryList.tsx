@@ -7,16 +7,21 @@ import type { ClipboardItem } from "@/lib/types";
 export function HistoryList({
   items,
   onMutate,
+  onCopyMove,
 }: {
   items: ClipboardItem[];
   onMutate: () => void;
+  onCopyMove: (item: ClipboardItem) => void;
 }) {
   const copy = (item: ClipboardItem) => {
-    if (item.kind === "image") {
-      api.copyImageToClipboard(item.content).then(onMutate).catch(console.error);
-    } else {
-      api.copyToClipboard(item.content).then(onMutate).catch(console.error);
-    }
+    // Optimistic: card jumps to top synchronously. The backend bump + live
+    // event follow and dedupe by id — no full refresh waits on a click.
+    onCopyMove(item);
+    const p =
+      item.kind === "image"
+        ? api.copyImageToClipboard(item.content)
+        : api.copyToClipboard(item.content);
+    p.catch(console.error);
   };
   const pin = (item: ClipboardItem) =>
     api.togglePin(item.id).then(onMutate).catch(console.error);

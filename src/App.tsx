@@ -161,6 +161,12 @@ function App() {
     setVisibleCount(50);
   }, []);
 
+  // Instant move-to-top on card click. The backend bump + live event follow
+  // within a tick and dedupe by id — the UI never waits for the round-trip.
+  const moveToTop = useCallback((item: ClipboardItem) => {
+    setItems((prev) => [item, ...prev.filter((i) => i.id !== item.id)]);
+  }, []);
+
   return (
     <main className="flex h-screen min-w-0 flex-col gap-2 overflow-hidden bg-background p-2 text-foreground antialiased">
       <div
@@ -186,7 +192,7 @@ function App() {
       </div>
       {filtered.length > 0 ? (
         <>
-          <HistoryList items={visible} onMutate={refresh} />
+          <HistoryList items={visible} onMutate={refresh} onCopyMove={moveToTop} />
           {visibleCount < filtered.length && (
             <button
               type="button"

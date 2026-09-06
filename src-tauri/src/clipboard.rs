@@ -120,23 +120,22 @@ fn store_and_emit(
     }
 }
 
-fn capture_and_store(
-    app: &AppHandle,
-    state: &AppState,
-    conn: &rusqlite::Connection,
-) {
-    // Time-bound suppression: our own writes are ignored for ~2s, but an
-    // identical copy after that is a genuine re-copy and must bump to top.
-    let already_seen = |hash: &str| seen_recently(state, hash);
+/// Clipboard payload already pulled off the OS clipboard (gate released).
+enum Captured {
+    Text { text: String, hash: String },
+    Image { width: usize, height: usize, bytes: Vec<u8>, hash: String },
+}
 
-    // Hold the gate for the whole read so a click-copy can't slip in
-    // mid-read and race us on OpenClipboard.
+/// Read phase: opens the clipboard, copies bytes out, releases the gate.
+/// Kept as short as possible — a click-copy waits on this lock, so the slow
+/// work (PNG encode, SQLite) happens after it drops.
+fn read_clipboard(state: &AppState) -> Option<Captured> {
     let _guard = CLIPBOARD_LOCK.lock().unwrap();
     let mut clipboard = match Clipboard::new() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("clipboard-superpowers: clipboard init failed: {e}");
-            return;
+            return None;
         }
     };
 
@@ -145,41 +144,70 @@ fn capture_and_store(
     // image is only stored when get_text() fails.
     if let Ok(text) = clipboard.get_text() {
         if text.trim().is_empty() {
-            return;
+            return None;
         }
         let hash = hash_content(text.as_bytes());
-        if already_seen(&hash) {
-            return;
+        // Time-bound suppression: our own writes are ignored for ~2s, but an
+        // identical copy after that is a genuine re-copy and must bump to top.
+        if seen_recently(state, &hash) {
+            return None;
         }
-        let category = categorize(&text).to_string();
-        let item = ClipboardItem {
-            id: 0,
-            content: text,
-            content_hash: hash.clone(),
-            category,
-            kind: "text".into(),
-            pinned: false,
-            created_at: Utc::now().to_rfc3339(),
-        };
-        store_and_emit(app, state, conn, item, hash);
+        Some(Captured::Text { text, hash })
     } else if let Ok(ImageData { width, height, bytes }) = clipboard.get_image() {
         let hash = image_hash(width, height, &bytes);
-        if already_seen(&hash) {
-            return;
+        if seen_recently(state, &hash) {
+            return None;
         }
-        let Some(path) = save_image_png(&state.images_dir, &hash, width, height, &bytes) else {
-            return;
-        };
-        let item = ClipboardItem {
-            id: 0,
-            content: path.to_string_lossy().to_string(),
-            content_hash: hash.clone(),
-            category: "image".into(),
-            kind: "image".into(),
-            pinned: false,
-            created_at: Utc::now().to_rfc3339(),
-        };
-        store_and_emit(app, state, conn, item, hash);
+        Some(Captured::Image {
+            width,
+            height,
+            bytes: bytes.into_owned(),
+            hash,
+        })
+    } else {
+        None
+    }
+}
+
+fn capture_and_store(
+    app: &AppHandle,
+    state: &AppState,
+    conn: &rusqlite::Connection,
+) {
+    // Store phase runs WITHOUT the gate: bytes are already in memory, so
+    // PNG encoding + SQLite never block a click-copy.
+    let Some(captured) = read_clipboard(state) else {
+        return;
+    };
+    match captured {
+        Captured::Text { text, hash } => {
+            let category = categorize(&text).to_string();
+            let item = ClipboardItem {
+                id: 0,
+                content: text,
+                content_hash: hash.clone(),
+                category,
+                kind: "text".into(),
+                pinned: false,
+                created_at: Utc::now().to_rfc3339(),
+            };
+            store_and_emit(app, state, conn, item, hash);
+        }
+        Captured::Image { width, height, bytes, hash } => {
+            let Some(path) = save_image_png(&state.images_dir, &hash, width, height, &bytes) else {
+                return;
+            };
+            let item = ClipboardItem {
+                id: 0,
+                content: path.to_string_lossy().to_string(),
+                content_hash: hash.clone(),
+                category: "image".into(),
+                kind: "image".into(),
+                pinned: false,
+                created_at: Utc::now().to_rfc3339(),
+            };
+            store_and_emit(app, state, conn, item, hash);
+        }
     }
 }
 
