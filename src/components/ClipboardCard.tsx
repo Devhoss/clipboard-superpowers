@@ -1,4 +1,4 @@
-import { categoryChipClass } from "@/components/CategoryFilter";
+import { CategoryLabel } from "@/components/CategoryFilter";
 import { CardAction } from "@/components/CardShared";
 import { cn } from "@/lib/utils";
 import { extractColor, formatTime } from "@/lib/format";
@@ -35,7 +35,7 @@ export function ClipboardCard({
       <div className="flex min-w-0 items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
           {item.pinned && <Pin className="size-3 text-amber-400" />}
-          <span className={cn(categoryChipClass(item.category), "font-medium")}>{item.category}</span>
+          <CategoryLabel category={item.category} />
           {colorValue && (
             <span
               className="inline-block size-4 shrink-0 rounded-md border border-white/20 shadow-sm"

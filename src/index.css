@@ -86,39 +86,41 @@
 }
 
 .dark {
-    --background: oklch(0.17 0.015 260);
-    --foreground: oklch(0.96 0.006 250);
-    --card: oklch(0.22 0.018 260);
-    --card-foreground: oklch(0.96 0.006 250);
-    --popover: oklch(0.22 0.018 260);
-    --popover-foreground: oklch(0.96 0.006 250);
-    --primary: oklch(0.76 0.14 265);
-    --primary-foreground: oklch(0.19 0.02 265);
-    --secondary: oklch(0.27 0.02 260);
-    --secondary-foreground: oklch(0.96 0.006 250);
-    --muted: oklch(0.27 0.02 260);
-    --muted-foreground: oklch(0.7 0.018 260);
-    --accent: oklch(0.3 0.03 265);
-    --accent-foreground: oklch(0.96 0.006 250);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(0.38 0.02 260);
-    --input: oklch(0.31 0.02 260);
-    --ring: oklch(0.7 0.14 265);
+    /* Grok-bot inspired: pure near-black base, charcoal grouped cards,
+       white accent. No blue tint anywhere. */
+    --background: #08080a;
+    --foreground: #f5f5f7;
+    --card: #1c1c1f;
+    --card-foreground: #f5f5f7;
+    --popover: #1c1c1f;
+    --popover-foreground: #f5f5f7;
+    --primary: #f5f5f7;
+    --primary-foreground: #08080a;
+    --secondary: #26262b;
+    --secondary-foreground: #f5f5f7;
+    --muted: #26262b;
+    --muted-foreground: #9a9aa3;
+    --accent: #2e2e34;
+    --accent-foreground: #f5f5f7;
+    --destructive: #ff453a;
+    --border: #ffffff1f;
+    --input: #ffffff26;
+    --ring: #d4d4d8;
     --chart-1: oklch(0.87 0 0);
     --chart-2: oklch(0.556 0 0);
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
-    --scrollbar-thumb: oklch(0.42 0.03 260);
-    --scrollbar-thumb-hover: oklch(0.58 0.08 265);
+    --sidebar: #101013;
+    --sidebar-foreground: #f5f5f7;
+    --sidebar-primary: #f5f5f7;
+    --sidebar-primary-foreground: #08080a;
+    --sidebar-accent: #26262b;
+    --sidebar-accent-foreground: #f5f5f7;
+    --sidebar-border: #ffffff1a;
+    --sidebar-ring: #8e8e93;
+    --scrollbar-thumb: #3a3a40;
+    --scrollbar-thumb-hover: #54545c;
 }
 
 @layer base {

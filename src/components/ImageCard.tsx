@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { CardAction } from "@/components/CardShared";
+import { CategoryLabel } from "@/components/CategoryFilter";
 import { formatTime } from "@/lib/format";
 import { getCachedImage } from "@/lib/imageCache";
 import type { ClipboardItem } from "@/lib/types";
-import { Copy, ImageIcon, Pin, PinOff, Trash2 } from "lucide-react";
+import { Copy, Pin, PinOff, Trash2 } from "lucide-react";
 
 export function ImageCard({
   item,
@@ -52,8 +53,7 @@ export function ImageCard({
       <div className="flex min-w-0 items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
           {item.pinned && <Pin className="size-3 text-amber-400" />}
-          <ImageIcon className="size-3 text-emerald-400" />
-          <span className="text-[10px] font-medium uppercase tracking-wider text-emerald-400">image</span>
+          <CategoryLabel category={item.category} />
         </div>
         <div className="flex items-center gap-0.5">
           <span className="mr-1 text-[10px] text-muted-foreground">{formatTime(item.created_at)}</span>
