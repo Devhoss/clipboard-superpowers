@@ -122,13 +122,17 @@ function App() {
         hideTimer = setTimeout(() => {
           // Still unfocused after the grace window? Then it's a real
           // click-away — hide. Transient drag blips re-focus first.
+          const doHide = () => {
+            // Reset while hidden so the next summon paints the list on its
+            // very first frame — never a flash of the settings page.
+            setView("list");
+            win.hide().catch(console.error);
+          };
           win.isFocused().then((focused) => {
-            if (!focused) win.hide().catch(console.error);
-          }).catch(() => win.hide().catch(console.error));
+            if (!focused) doHide();
+          }).catch(doHide);
         }, 150);
       } else {
-        // Always land on the list when summoned — never a stale settings page.
-        setView("list");
         setSearch("");
         // fetchFor("") refreshes + resets pagination
         fetchFor("");
