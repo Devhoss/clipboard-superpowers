@@ -26,6 +26,19 @@ fn toggle_main_window(app: &tauri::AppHandle) {
             // dragged it. Initial position comes from tauri.conf.json.
             let _ = win.show();
             let _ = win.set_focus();
+            // Tray-click race: the shell reclaims foreground right after the
+            // tray click completes, stealing our just-gained focus — which
+            // trips blur-hide and the window flash-hides. Re-assert focus
+            // once the click settles; the blur timer cancels itself on gain.
+            let reassert = win.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(120));
+                if reassert.is_visible().unwrap_or(false)
+                    && !reassert.is_focused().unwrap_or(true)
+                {
+                    let _ = reassert.set_focus();
+                }
+            });
         }
     }
 }
