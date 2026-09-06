@@ -3,7 +3,7 @@ use base64::Engine as _;
 use rusqlite::OptionalExtension;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::clipboard::{suppress_hash, AppState, MAX_ITEMS};
+use crate::clipboard::{suppress_hash, write_with_retry, AppState, MAX_ITEMS};
 use crate::db::{self, ClipboardItem};
 
 fn with_conn<T>(
@@ -69,8 +69,9 @@ pub fn copy_to_clipboard(
     text: String,
 ) -> Result<(), String> {
     let hash = crate::categorize::hash_content(text.as_bytes());
-    let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    cb.set_text(text).map_err(|e| e.to_string())?;
+    // Gated + retried: without this a click landing mid-poll-read fails
+    // with Windows 1418. Cloned per attempt since retry may run it again.
+    write_with_retry(|cb| cb.set_text(text.clone()))?;
     // Re-copy = most recent: bump the row so the card jumps to the top
     // immediately instead of waiting for the next poll tick.
     let conn = db::open_db(&state.db_path.to_string_lossy()).map_err(|e| e.to_string())?;
@@ -99,13 +100,15 @@ pub fn copy_image_to_clipboard(
     // MUST match clipboard::image_hash (dims + pixels), not raw pixels alone.
     let hash = crate::clipboard::image_hash(width, height, img.as_raw());
     let raw = img.into_raw();
-    let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    cb.set_image(ImageData {
-        width,
-        height,
-        bytes: std::borrow::Cow::Owned(raw),
-    })
-    .map_err(|e| e.to_string())?;
+    // Same gate+retry as text — image payloads are megabytes, so the race
+    // window they hold the clipboard open is widest for them.
+    write_with_retry(|cb| {
+        cb.set_image(ImageData {
+            width,
+            height,
+            bytes: std::borrow::Cow::Owned(raw.clone()),
+        })
+    })?;
     let conn = db::open_db(&state.db_path.to_string_lossy()).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().to_rfc3339();
     match db::touch_by_hash(&conn, &hash, &now).map_err(|e| e.to_string())? {

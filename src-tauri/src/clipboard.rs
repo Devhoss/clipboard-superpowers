@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -31,6 +31,36 @@ fn seen_recently(state: &AppState, hash: &str) -> bool {
         Some((h, t)) => h == hash && t.elapsed().as_secs() < SUPPRESS_WINDOW_SECS,
         None => false,
     }
+}
+
+/// Process-wide clipboard gate. Our poller opens the clipboard every 300ms,
+/// so a card-click write landing mid-read races on OpenClipboard and Windows
+/// answers 1418 ("thread does not have a clipboard open"). Every clipboard
+/// access — poll reads and command writes — goes through this lock.
+/// External holders (viewers, RDP, screenshot tools) are handled by retry.
+pub static CLIPBOARD_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+/// Run a clipboard write with the gate held, plus backoff retries for
+/// transient external contention. Reads don't need this — the next 300ms
+/// tick retries them for free. Must NOT be called while already holding
+/// CLIPBOARD_LOCK.
+pub fn write_with_retry<T>(
+    mut op: impl FnMut(&mut Clipboard) -> Result<T, arboard::Error>,
+) -> Result<T, String> {
+    let _guard = CLIPBOARD_LOCK.lock().unwrap();
+    let mut last = String::new();
+    for attempt in 0..5 {
+        match Clipboard::new().and_then(|mut cb| op(&mut cb)) {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                last = e.to_string();
+                if attempt < 4 {
+                    std::thread::sleep(Duration::from_millis(60 * (attempt as u64 + 1)));
+                }
+            }
+        }
+    }
+    Err(last)
 }
 
 #[derive(Clone)]
@@ -91,7 +121,6 @@ fn store_and_emit(
 }
 
 fn capture_and_store(
-    clipboard: &mut Clipboard,
     app: &AppHandle,
     state: &AppState,
     conn: &rusqlite::Connection,
@@ -99,6 +128,17 @@ fn capture_and_store(
     // Time-bound suppression: our own writes are ignored for ~2s, but an
     // identical copy after that is a genuine re-copy and must bump to top.
     let already_seen = |hash: &str| seen_recently(state, hash);
+
+    // Hold the gate for the whole read so a click-copy can't slip in
+    // mid-read and race us on OpenClipboard.
+    let _guard = CLIPBOARD_LOCK.lock().unwrap();
+    let mut clipboard = match Clipboard::new() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("clipboard-superpowers: clipboard init failed: {e}");
+            return;
+        }
+    };
 
     // NOTE: text wins when the clipboard holds both text and an image
     // (common when copying images from browsers). Documented v1 tradeoff —
@@ -153,18 +193,12 @@ pub fn start_polling(app: AppHandle, state: AppState) {
                 return;
             }
         };
-        // NOTE: Clipboard handle is created fresh each tick. Reusing one
-        // handle across the loop can hold the Windows clipboard open and
-        // wedge after lock contention — per-tick creation is cheap.
+        // NOTE: Clipboard handle is created fresh each tick under the
+        // process-wide gate (see CLIPBOARD_LOCK). Reusing one handle across
+        // the loop can hold the Windows clipboard open and wedge after lock
+        // contention — per-tick creation is cheap.
         loop {
-            match Clipboard::new() {
-                Ok(mut clipboard) => {
-                    capture_and_store(&mut clipboard, &app, &state, &conn);
-                }
-                Err(e) => {
-                    eprintln!("clipboard-superpowers: clipboard init failed: {e}");
-                }
-            }
+            capture_and_store(&app, &state, &conn);
             thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
         }
     });
