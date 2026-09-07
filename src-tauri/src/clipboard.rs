@@ -287,11 +287,49 @@ fn capture_and_store(
 /// Get the usable fragment out of whatever `formats::Html` handed us.
 /// Pure (no clipboard access) so it can be unit-tested against captured
 /// real-world bytes. See `read_html_for_text` for why both shapes exist.
+///
+/// Rejects degenerate inputs instead of banking them:
+/// - full documents with stale offsets (header kept as text otherwise),
+/// - fragments starting mid-attribute (`e: ; --tw-...;">x</li></ul>` — the
+///   StartFragment offset can land inside a tag; the dangling attribute text
+///   would render as visible CSS garbage),
+/// - tag-free text (no formatting to keep — stays a plain card).
+/// A rejected capture stores NULL, so a re-copy can only flip plain→rich,
+/// never rich→garbage→rich.
 fn extract_fragment(raw: &[u8]) -> Option<String> {
     if let Some(frag) = parse_cf_html(raw) {
-        return Some(frag);
+        return first_element_from(&frag);
     }
-    std::str::from_utf8(raw).ok().map(str::to_string)
+    // Not a parseable document: could be a bare fragment, or a document with
+    // stale offsets whose header would otherwise leak in as text (seen live:
+    // "Version:0.9 StartHTML:..." stored in the DB). Drop header lines.
+    let text = std::str::from_utf8(raw).ok()?;
+    let body = match text.find('<') {
+        Some(0) => text,
+        Some(i) => &text[i..],
+        None => return None,
+    };
+    // Header lines end at the first tag; but a bare mid-attribute slice has
+    // no header — first_element_from still rejects it below.
+    first_element_from(body)
+}
+
+/// Trim to the first real element. Returns None when there is no opening
+/// formatting tag — closing tags alone (`</li></ul>`) or bare text carry no
+/// recoverable formatting.
+fn first_element_from(frag: &str) -> Option<String> {
+    let start = frag.find('<')?;
+    let frag = &frag[start..];
+    const TAGS: [&str; 19] = [
+        "h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "span", "b", "strong",
+        "i", "em", "u", "a", "ul", "ol", "li", "pre",
+    ];
+    let lower = frag.to_lowercase();
+    let ok = TAGS.iter().any(|t| {
+        lower.contains(&format!("<{t}>"))
+            || lower.contains(&format!("<{t} "))
+    });
+    ok.then(|| frag.to_string())
 }
 
 /// Read the `HTML Format` flavor for `expected` text (PR4).
@@ -377,5 +415,29 @@ mod tests {
         );
         // Garbage in: None (caller stores nothing).
         assert_eq!(extract_fragment(b"\xff\xfe binary").as_deref(), None);
+    }
+
+    #[test]
+    fn extract_fragment_rejects_degenerate_shapes() {
+        // Live: StartFragment offset landed mid-attribute — dangling CSS
+        // would otherwise render as visible garbage text.
+        let mid_tag = b"e: ; --tw-numeric-spacing: ; font-size: 1.25rem;\">French bulldog</li></ul>";
+        assert_eq!(extract_fragment(mid_tag).as_deref(), None);
+        // Closing tags alone carry no recoverable formatting.
+        assert_eq!(extract_fragment(b"</li></ul>").as_deref(), None);
+        // Tag-free text is not HTML — stays a plain card.
+        assert_eq!(extract_fragment(b"just text").as_deref(), None);
+        // Live (link card): full document with stale offsets — header must
+        // not leak in as text, anchor must survive.
+        let stale = b"Version:0.9
+\nStartHTML:00000097
+\nEndHTML:00000295
+\nStartFragment:00000131
+\nEndFragment:00000259
+\n
+\n<a href=\"https://x.com\">x</a>";
+        let got = extract_fragment(stale).unwrap();
+        assert!(!got.contains("Version"), "header leaked: {got:?}");
+        assert!(got.contains("<a href=\"https://x.com\">"), "anchor lost: {got:?}");
     }
 }
