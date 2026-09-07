@@ -161,8 +161,18 @@ fn store_and_emit(
     match insert_item(conn, &item, max_items(state)) {
         Ok(outcome) => {
             suppress_hash(state, &hash);
-            let mut emitted = item;
-            emitted.id = outcome.id;
+            // Emit the STORED row, not the freshly built item: the builder
+            // always has pinned=false, so emitting it visually unpinned a
+            // card whenever our own copy was re-captured after the suppress
+            // window (pin held in DB, UI showed unpinned).
+            let emitted = match crate::db::get_by_hash(conn, &hash) {
+                Ok(Some(row)) => row,
+                _ => {
+                    let mut fallback = item;
+                    fallback.id = outcome.id;
+                    fallback
+                }
+            };
             let _ = app.emit("clipboard:new-item", &emitted);
         }
         Err(e) => {

@@ -81,7 +81,12 @@ pub fn insert_item(conn: &Connection, item: &ClipboardItem, max_items: i64) -> R
     conn.execute(
         "INSERT INTO clipboard_history (content, content_hash, category, kind, pinned, created_at, html)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT(content_hash) DO UPDATE SET created_at = excluded.created_at, html = excluded.html",
+         ON CONFLICT(content_hash) DO UPDATE SET
+           created_at = excluded.created_at,
+           -- A re-capture with a failed flavor read (None) must not erase
+           -- known formatting; pinned is never written here at all (only
+           -- toggle_pin changes it) so bumps can't unpin.
+           html = COALESCE(excluded.html, clipboard_history.html)",
         params![
             item.content,
             item.content_hash,
@@ -180,6 +185,16 @@ pub fn touch_by_hash(conn: &Connection, hash: &str, now: &str) -> Result<Option<
     Ok(Some(row))
 }
 
+/// Read one row by content hash. The poller emits this after insert/bump so
+/// the event carries the true stored state (pinned, id) — never the freshly
+/// built item with its `pinned: false` default, which visually unpinned cards
+/// when our own copy was re-captured after the suppress window.
+pub fn get_by_hash(conn: &Connection, hash: &str) -> Result<Option<ClipboardItem>> {
+    let sql = format!("SELECT {ITEM_COLUMNS} FROM clipboard_history WHERE content_hash = ?1");
+    let mut stmt = conn.prepare(&sql)?;
+    stmt.query_row(params![hash], row_to_item).optional().map_err(Into::into)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn html_flavor_round_trips_and_updates_on_recopy() {
+    fn html_flavor_round_trips_and_survives_htmlless_recapture() {
         let conn = open_in_memory_db().unwrap();
         let mut rich = item("hello", "2026-01-01T00:00:00Z");
         rich.html = Some("<b>hello</b>".into());
@@ -230,13 +245,22 @@ mod tests {
         let got = get_all_items(&conn, 1000).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].html.as_deref(), Some("<b>hello</b>"));
-        // Plain re-copy of the same text clears stale formatting (latest wins).
+        // A flavorless re-capture (transient read failure, mid-tag slice)
+        // must NOT erase known formatting — the poller re-reads the same
+        // ambient content constantly, so "latest wins" visibly flaps cards
+        // with no user action. Only a well-formed new fragment replaces.
         let mut plain = item("hello", "2026-01-02T00:00:00Z");
         plain.content_hash = "hash-hello".into();
         insert_item(&conn, &plain, 1000).unwrap();
         let got = get_all_items(&conn, 1000).unwrap();
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].html, None);
+        assert_eq!(got[0].html.as_deref(), Some("<b>hello</b>"));
+        let mut richer = item("hello", "2026-01-03T00:00:00Z");
+        richer.content_hash = "hash-hello".into();
+        richer.html = Some("<i>hello</i>".into());
+        insert_item(&conn, &richer, 1000).unwrap();
+        let got = get_all_items(&conn, 1000).unwrap();
+        assert_eq!(got[0].html.as_deref(), Some("<i>hello</i>"));
     }
 
     #[test]
@@ -300,6 +324,30 @@ mod tests {
         assert_eq!(items[0].content, "bump me");
     }
 
+    #[test]
+    fn bump_preserves_pin_and_html_on_htmlless_recapture() {
+        let conn = open_in_memory_db().unwrap();
+        let mut rich = item("pin me", "2026-01-01T00:00:00Z");
+        rich.html = Some("<b>pin me</b>".into());
+        let out = insert_item(&conn, &rich, 1000).unwrap();
+        toggle_pin(&conn, out.id).unwrap();
+        // Re-capture with a failed flavor read (html None): bump timestamp
+        // but keep pin + formatting — this visually unpinned cards live.
+        let mut plain = item("pin me", "2026-01-02T00:00:00Z");
+        plain.html = None;
+        insert_item(&conn, &plain, 1000).unwrap();
+        let row = get_by_hash(&conn, "hash-pin me").unwrap().unwrap();
+        assert!(row.pinned, "bump must not unpin");
+        assert_eq!(row.html.as_deref(), Some("<b>pin me</b>"));
+        assert_eq!(row.created_at, "2026-01-02T00:00:00Z");
+        // A re-capture WITH html still updates it.
+        let mut richer = item("pin me", "2026-01-03T00:00:00Z");
+        richer.html = Some("<i>pin me</i>".into());
+        insert_item(&conn, &richer, 1000).unwrap();
+        let row = get_by_hash(&conn, "hash-pin me").unwrap().unwrap();
+        assert_eq!(row.html.as_deref(), Some("<i>pin me</i>"));
+        assert!(get_by_hash(&conn, "nope").unwrap().is_none());
+    }
     #[test]
     fn touch_by_hash_returns_none_for_unknown_hash() {
         let conn = open_in_memory_db().unwrap();
