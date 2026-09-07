@@ -49,7 +49,7 @@ export function ClipboardCard({
       {item.html ? (
         <div
           aria-label="Formatted preview"
-          className="mt-2 line-clamp-3 break-words text-[13px] leading-relaxed"
+          className="rich-preview mt-2 line-clamp-3 break-words text-[13px] leading-relaxed"
           // Backend-sanitized (ammonia allowlist, scripts/handlers stripped).
           // Never render raw clipboard HTML here — see richtext.rs.
           dangerouslySetInnerHTML={{ __html: item.html.slice(0, 2000) }}

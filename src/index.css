@@ -191,3 +191,14 @@
     background-color: var(--scrollbar-thumb-hover);
   }
 }
+
+/* Rich-text preview (PR4): pasted HTML often carries explicit colors from
+   the source app (e.g. Word/Docs black `rgb(0,0,0)`), which is invisible on
+   our dark cards. In dark mode the preview inherits card text instead —
+   structure (headings, bold, sizes) stays, source colors don't. Light mode
+   keeps original colors. Copy-back always writes the stored HTML untouched. */
+html.dark .rich-preview,
+html.dark .rich-preview * {
+  color: inherit !important;
+  background-color: transparent !important;
+}
