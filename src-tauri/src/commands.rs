@@ -1,7 +1,7 @@
 use arboard::ImageData;
 use base64::Engine as _;
 use rusqlite::OptionalExtension;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::clipboard::{suppress_hash, write_with_retry, AppState};
 use crate::db::{self, ClipboardItem};
@@ -137,6 +137,48 @@ fn write_html_flavor(doc: &str) -> Result<(), String> {
     clipboard_win::formats::Html::new()
         .ok_or_else(|| "HTML Format not registered".to_string())?
         .write_clipboard(&doc.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Copy-then-paste into the previously focused app (PR2 backend slice).
+///
+/// Flow: reuse `copy_to_clipboard` (clipboard + bump + suppress + event),
+/// hide the popup so focus falls back to the previous app, wait a beat,
+/// then synthesize Ctrl+V. Text only — images/HTML stay copy-only.
+///
+/// The 150ms sleep blocks this command's worker thread briefly; that is
+/// deliberate — the keys must not fire before the OS restores focus.
+/// Failures are returned, never swallowed: a failed key-sim means the text
+/// is still on the clipboard (copy succeeded), so the user can Ctrl+V by hand.
+#[tauri::command]
+pub fn paste_text_to_previous_app(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    text: String,
+) -> Result<(), String> {
+    copy_to_clipboard(state, app.clone(), text)?;
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.hide();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    send_ctrl_v()
+}
+
+/// Raw SendInput Ctrl+V. OS-bound by nature: no automated test fires this
+/// (a test that emits real keystrokes into whatever window has focus is
+/// worse than no test). Verified manually — see PR body.
+fn send_ctrl_v() -> Result<(), String> {
+    use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+    enigo
+        .key(Key::Control, Direction::Press)
+        .map_err(|e| e.to_string())?;
+    enigo
+        .key(Key::Unicode('v'), Direction::Click)
+        .map_err(|e| e.to_string())?;
+    enigo
+        .key(Key::Control, Direction::Release)
         .map_err(|e| e.to_string())?;
     Ok(())
 }
