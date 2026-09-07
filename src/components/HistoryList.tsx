@@ -1,57 +1,66 @@
+import { useEffect, useRef } from "react";
 import { ClipboardCard } from "./ClipboardCard";
 import { ImageCard } from "./ImageCard";
-import { api } from "@/lib/api";
-import { evictCachedImage } from "@/lib/imageCache";
 import type { ClipboardItem } from "@/lib/types";
 
+// Presentational list (PR1). Card actions live in App so mouse and keyboard
+// share one path — this component only renders, highlights, and scrolls.
 export function HistoryList({
   items,
-  onMutate,
-  onCopyMove,
+  selectedIndex,
+  onCopy,
+  onPin,
+  onDelete,
+  onHoverIndex,
 }: {
   items: ClipboardItem[];
-  onMutate: () => void;
-  onCopyMove: (item: ClipboardItem) => void;
+  selectedIndex: number;
+  onCopy: (item: ClipboardItem) => void;
+  onPin: (item: ClipboardItem) => void;
+  onDelete: (item: ClipboardItem) => void;
+  onHoverIndex: (index: number) => void;
 }) {
-  const copy = (item: ClipboardItem) => {
-    // Optimistic: card jumps to top synchronously. The backend bump + live
-    // event follow and dedupe by id — no full refresh waits on a click.
-    onCopyMove(item);
-    const p =
-      item.kind === "image"
-        ? api.copyImageToClipboard(item.content)
-        : api.copyToClipboard(item.content);
-    p.catch(console.error);
-  };
-  const pin = (item: ClipboardItem) =>
-    api.togglePin(item.id).then(onMutate).catch(console.error);
-  const remove = (item: ClipboardItem) => {
-    if (item.kind === "image") evictCachedImage(item.content);
-    api.deleteItem(item.id).then(onMutate).catch(console.error);
-  };
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Keep the selected card in view while arrowing through the list.
+  useEffect(() => {
+    containerRef.current
+      ?.querySelector(`[data-index="${selectedIndex}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [selectedIndex]);
 
   return (
-    <div className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+    <div
+      ref={containerRef}
+      className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto pr-1 [scrollbar-gutter:stable]"
+    >
       <div className="flex w-full min-w-0 flex-col gap-2.5 px-0.5 pt-0.5 pb-2">
-        {items.map((item) =>
-          item.kind === "image" ? (
-            <ImageCard
-              key={item.id}
-              item={item}
-              onCopy={() => copy(item)}
-              onPin={() => pin(item)}
-              onDelete={() => remove(item)}
-            />
-          ) : (
-            <ClipboardCard
-              key={item.id}
-              item={item}
-              onCopy={() => copy(item)}
-              onPin={() => pin(item)}
-              onDelete={() => remove(item)}
-            />
-          ),
-        )}
+        {items.map((item, i) => (
+          <div
+            key={item.id}
+            data-index={i}
+            onMouseEnter={() => onHoverIndex(i)}
+            className={
+              i === selectedIndex ? "rounded-xl ring-1 ring-primary/80" : undefined
+            }
+          >
+            {item.kind === "image" ? (
+              <ImageCard
+                item={item}
+                onCopy={() => onCopy(item)}
+                onPin={() => onPin(item)}
+                onDelete={() => onDelete(item)}
+              />
+            ) : (
+              <ClipboardCard
+                item={item}
+                onCopy={() => onCopy(item)}
+                onPin={() => onPin(item)}
+                onDelete={() => onDelete(item)}
+              />
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );

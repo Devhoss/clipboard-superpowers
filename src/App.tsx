@@ -7,6 +7,8 @@ import { HistoryList } from "./components/HistoryList";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ThemeSwitcher, type ThemeMode } from "./components/ThemeSwitcher";
 import { api, EVENTS } from "./lib/api";
+import { clampSelection, moveSelection } from "./lib/keyboardNav";
+import { evictCachedImage } from "@/lib/imageCache";
 import type { AppSettings, ClipboardItem } from "./lib/types";
 import { ArrowLeft, Settings as SettingsIcon } from "lucide-react";
 
@@ -35,6 +37,10 @@ function App() {
   const [visibleCount, setVisibleCount] = useState(50);
   const [view, setView] = useState<"list" | "settings">("list");
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  // Keyboard selection (PR1). Index into `visible` below, not the full list.
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const selectedRef = useRef(0);
+  selectedRef.current = selectedIndex;
   const viewRef = useRef(view);
   viewRef.current = view;
   const hideOnBlurRef = useRef(true);
@@ -52,6 +58,7 @@ function App() {
       if (requestId.current === id) {
         setItems(rows);
         setVisibleCount(50);
+        setSelectedIndex(0);
       }
     }).catch(console.error);
   }, []);
@@ -102,12 +109,44 @@ function App() {
     let hideTimer: ReturnType<typeof setTimeout> | null = null;
 
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      // In settings, Esc goes back first — only hides from the list.
-      if (viewRef.current === "settings") {
-        setView("list");
-      } else {
-        win.hide().catch(console.error);
+      if (e.key === "Escape") {
+        // In settings, Esc goes back first — only hides from the list.
+        if (viewRef.current === "settings") {
+          setView("list");
+        } else {
+          win.hide().catch(console.error);
+        }
+        return;
+      }
+      // Keyboard nav (PR1): list view only — settings has its own inputs.
+      if (viewRef.current !== "list") return;
+      const rows = visibleRef.current;
+      if (rows.length === 0) return;
+      const target = e.target as HTMLElement | null;
+      const typing =
+        !!target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA");
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        // Always steer selection, even from the search box (launcher
+        // behavior). Left/Right stay native for caret movement.
+        e.preventDefault();
+        const delta = e.key === "ArrowDown" ? 1 : -1;
+        setSelectedIndex((i) => moveSelection(i, delta, rows.length));
+      } else if (e.key === "Enter") {
+        // Enter is inert in a single-line search box, so copying the
+        // selected card from there is safe and useful.
+        const item = rows[selectedRef.current] ?? rows[0];
+        if (item) {
+          e.preventDefault();
+          copyItemRef.current(item);
+        }
+      } else if (e.key === "Delete" && !typing) {
+        // Delete key only, never Backspace — hijacking Backspace while
+        // typing would eat search text instead of deleting cards.
+        const item = rows[selectedRef.current];
+        if (item) {
+          e.preventDefault();
+          removeItemRef.current(item);
+        }
       }
     };
     window.addEventListener("keydown", onKey);
@@ -186,10 +225,18 @@ function App() {
     [items, category],
   );
   const visible = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount]);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+
+  // Clamp selection when the list shrinks (filter narrows, item deleted).
+  useEffect(() => {
+    setSelectedIndex((i) => clampSelection(i, visibleRef.current.length));
+  }, [filtered.length, visibleCount]);
 
   const handleCategory = useCallback((c: string) => {
     setCategory(c);
     setVisibleCount(50);
+    setSelectedIndex(0);
   }, []);
 
   // Instant move-to-top on card click. The backend bump + live event follow
@@ -197,6 +244,40 @@ function App() {
   const moveToTop = useCallback((item: ClipboardItem) => {
     setItems((prev) => [item, ...prev.filter((i) => i.id !== item.id)]);
   }, []);
+
+  // Card actions, lifted here so mouse AND keyboard share one path (PR1).
+  // Same behavior as before the lift: optimistic updates, errors to console.
+  const copyItem = useCallback(
+    (item: ClipboardItem) => {
+      moveToTop(item);
+      const p =
+        item.kind === "image"
+          ? api.copyImageToClipboard(item.content)
+          : api.copyToClipboard(item.content);
+      p.catch(console.error);
+    },
+    [moveToTop],
+  );
+  const pinItem = useCallback(
+    (item: ClipboardItem) => {
+      api.togglePin(item.id).then(refresh).catch(console.error);
+    },
+    [refresh],
+  );
+  const removeItem = useCallback(
+    (item: ClipboardItem) => {
+      if (item.kind === "image") evictCachedImage(item.content);
+      api
+        .deleteItem(item.id)
+        .then(refresh)
+        .catch(console.error);
+    },
+    [refresh],
+  );
+  const copyItemRef = useRef(copyItem);
+  copyItemRef.current = copyItem;
+  const removeItemRef = useRef(removeItem);
+  removeItemRef.current = removeItem;
 
   return (
     <main className="flex h-screen min-w-0 flex-col gap-2 overflow-hidden bg-background p-2 text-foreground antialiased">
@@ -261,7 +342,14 @@ function App() {
           </div>
           {filtered.length > 0 ? (
             <>
-              <HistoryList items={visible} onMutate={refresh} onCopyMove={moveToTop} />
+              <HistoryList
+                items={visible}
+                selectedIndex={selectedIndex}
+                onCopy={copyItem}
+                onPin={pinItem}
+                onDelete={removeItem}
+                onHoverIndex={setSelectedIndex}
+              />
               {visibleCount < filtered.length && (
                 <button
                   type="button"
