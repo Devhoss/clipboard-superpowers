@@ -1,7 +1,7 @@
 import { CategoryLabel } from "@/components/CategoryFilter";
 import { CardAction } from "@/components/CardShared";
 import { cn } from "@/lib/utils";
-import { extractColor, formatTime } from "@/lib/format";
+import { extractColor, formatTime, richPreviewHtml } from "@/lib/format";
 import type { ClipboardItem } from "@/lib/types";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Copy, Pin, PinOff, Trash2 } from "lucide-react";
@@ -20,6 +20,10 @@ export function ClipboardCard({
 }) {
   const isColor = item.category === "color";
   const colorValue = isColor ? extractColor(item.content) : null;
+  // Tag-boundary-truncated preview; null when nothing visible would survive
+  // (giant style shells) — the card falls back to plain text instead of a
+  // blank box. Copy-back still uses the full stored item.html.
+  const preview = richPreviewHtml(item.html);
   // Links inside the sanitized preview must open in the real browser —
   // without this the WebView navigates itself away from the app.
   const openPreviewLinksExternally = (e: MouseEvent<HTMLDivElement>) => {
@@ -65,13 +69,13 @@ export function ClipboardCard({
           <CardAction label="Delete" onClick={onDelete} destructive><Trash2 /></CardAction>
         </div>
       </div>
-      {item.html ? (
+      {preview ? (
         <div
           aria-label="Formatted preview"
           className="rich-preview mt-2 line-clamp-3 break-words text-[13px] leading-relaxed"
           // Backend-sanitized (ammonia allowlist, scripts/handlers stripped).
           // Never render raw clipboard HTML here — see richtext.rs.
-          dangerouslySetInnerHTML={{ __html: item.html.slice(0, 2000) }}
+          dangerouslySetInnerHTML={{ __html: preview }}
           onClick={openPreviewLinksExternally}
         />
       ) : (
