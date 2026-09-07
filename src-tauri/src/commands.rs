@@ -284,7 +284,7 @@ pub fn get_stats(state: State<'_, AppState>) -> Result<HistoryStats, String> {
 /// Delete history rows (and their orphaned image files). Returns row count.
 #[tauri::command]
 pub fn clear_history(state: State<'_, AppState>, delete_pinned: bool) -> Result<i64, String> {
-    with_conn(&state, |conn| {
+    let deleted = with_conn(&state, |conn| {
         let flag = if delete_pinned { 1 } else { 0 };
         let paths: Vec<String> = conn
             .prepare(
@@ -304,5 +304,30 @@ pub fn clear_history(state: State<'_, AppState>, delete_pinned: bool) -> Result<
             }
         }
         Ok(deleted)
-    })
+    })?;
+    // The system clipboard still holds the last copy — without suppression
+    // the poller re-captures it on the next tick and Clearing never sticks
+    // ("cleared 1 item" forever). Seq-guarded, so an explicit re-copy still
+    // captures. Best-effort: a failed read just keeps the old behavior.
+    suppress_ambient_clipboard(&state);
+    Ok(deleted)
+}
+
+/// Hash whatever sits on the OS clipboard right now into the suppress +
+/// deleted registries. Shared by clear_history (delete-all resurrects too).
+fn suppress_ambient_clipboard(state: &AppState) {
+    use crate::clipboard::{image_hash, note_deleted};
+    let _guard = crate::clipboard::CLIPBOARD_LOCK.lock().unwrap();
+    let Ok(mut cb) = arboard::Clipboard::new() else {
+        return;
+    };
+    if let Ok(text) = cb.get_text() {
+        if !text.trim().is_empty() {
+            note_deleted(state, &crate::categorize::hash_content(text.as_bytes()));
+        }
+        return;
+    }
+    if let Ok(img) = cb.get_image() {
+        note_deleted(state, &image_hash(img.width, img.height, &img.bytes));
+    }
 }
