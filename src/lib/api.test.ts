@@ -63,9 +63,9 @@ describe("api", () => {
     expect(mockedInvoke).toHaveBeenCalledWith("update_settings", { settings: s });
   });
 
-  it("passes delete_pinned to clear_history", async () => {
+  it("passes deletePinned (camelCase, as Tauri requires) to clear_history", async () => {
     await api.clearHistory(true);
-    expect(mockedInvoke).toHaveBeenCalledWith("clear_history", { delete_pinned: true });
+    expect(mockedInvoke).toHaveBeenCalledWith("clear_history", { deletePinned: true });
   });
 
   it("calls get_stats", async () => {
