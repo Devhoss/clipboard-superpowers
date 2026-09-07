@@ -38,22 +38,26 @@ pub fn search_history(state: State<'_, AppState>, query: String) -> Result<Vec<C
 #[tauri::command]
 pub fn delete_item(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     with_conn(&state, |conn| {
-        let row: Result<Option<(String, String)>, _> = conn
+        let row: Result<Option<(String, String, String)>, _> = conn
             .query_row(
-                "SELECT content, kind FROM clipboard_history WHERE id = ?1",
+                "SELECT content, kind, content_hash FROM clipboard_history WHERE id = ?1",
                 [id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional();
         match row {
-            Ok(Some((content, kind))) => {
+            Ok(Some((content, kind, hash))) => {
                 if kind == "image" {
                     let path = std::path::Path::new(&content);
                     if path.parent() == Some(&state.images_dir) {
                         let _ = std::fs::remove_file(path);
                     }
                 }
-                db::delete_item(conn, id).map(|_| ())
+                db::delete_item(conn, id).map(|_| ())?;
+                // Don't resurrect: the ambient clipboard still holds this
+                // content. Seq-guarded, so an explicit re-copy still captures.
+                crate::clipboard::note_deleted(&state, &hash);
+                Ok(())
             }
             Ok(None) => Ok(()),
             Err(e) => Err(e),

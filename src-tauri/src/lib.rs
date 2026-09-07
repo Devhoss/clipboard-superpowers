@@ -106,6 +106,7 @@ pub fn run() {
                 settings_path,
                 settings: Arc::new(Mutex::new(settings.clone())),
                 last_hash: Arc::new(Mutex::new(None)),
+                deleted: Arc::new(Mutex::new(Vec::new())),
             };
             clipboard::start_polling(app.handle().clone(), state.clone());
             app.manage(state);

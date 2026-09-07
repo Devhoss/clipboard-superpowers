@@ -32,6 +32,7 @@ base64 = { version = "0.23.1", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 tauri-plugin-global-shortcut = "2.3.2"
 tauri-plugin-autostart = "2.5.1"
+clipboard-win = "5"
 
 
 # thin LTO: near-full-LTO size at a fraction of the link time (full LTO

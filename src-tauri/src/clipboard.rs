@@ -23,8 +23,46 @@ pub const SUPPRESS_WINDOW_SECS: u64 = 2;
 /// same content forever (copy X twice → second copy ignored).
 pub type LastHash = Arc<Mutex<Option<(String, Instant)>>>;
 
+/// Hashes deleted by the user, paired with the clipboard sequence number at
+/// delete time. A deleted card must not come back while the SAME clipboard
+/// content sits there (ambient re-read every tick), but an explicit re-copy
+/// bumps the sequence and is a genuine capture.
+pub type DeletedHashes = Arc<Mutex<Vec<(String, u32)>>>;
+
+fn deleted_matches(entries: &[(String, u32)], hash: &str, seq: u32) -> bool {
+    entries.iter().any(|(h, s)| h == hash && *s == seq)
+}
+
 pub fn suppress_hash(state: &AppState, hash: &str) {
     *state.last_hash.lock().unwrap() = Some((hash.to_string(), Instant::now()));
+}
+
+/// Record a user delete so the ambient clipboard content doesn't resurrect
+/// the card on the next poll tick. The 2s gate covers the immediate ticks;
+/// the (hash, seq) entry covers everything after — until an explicit re-copy
+/// bumps the sequence and the content becomes capturable again.
+pub fn note_deleted(state: &AppState, hash: &str) {
+    suppress_hash(state, hash);
+    let Some(seq) = clipboard_win::raw::seq_num() else {
+        return;
+    };
+    let mut d = state.deleted.lock().unwrap();
+    d.retain(|(h, _)| h != hash);
+    d.push((hash.to_string(), seq.get()));
+    while d.len() > 100 {
+        d.remove(0);
+    }
+}
+
+fn is_deleted(state: &AppState, hash: &str) -> bool {
+    let d = state.deleted.lock().unwrap();
+    if d.is_empty() {
+        return false;
+    }
+    let Some(seq) = clipboard_win::raw::seq_num() else {
+        return false;
+    };
+    deleted_matches(&d, hash, seq.get())
 }
 
 fn seen_recently(state: &AppState, hash: &str) -> bool {
@@ -71,6 +109,8 @@ pub struct AppState {
     pub settings_path: PathBuf,
     pub settings: Arc<Mutex<Settings>>,
     pub last_hash: LastHash,
+    /// (hash, clipboard-seq-at-delete) pairs. See `deleted_matches`.
+    pub deleted: DeletedHashes,
 }
 
 fn max_items(state: &AppState) -> i64 {
@@ -164,6 +204,10 @@ fn read_clipboard(state: &AppState) -> Option<Captured> {
             if seen_recently(state, &hash) {
                 return None;
             }
+            // User-deleted: ambient re-reads stay dead until a real re-copy.
+            if is_deleted(state, &hash) {
+                return None;
+            }
             return Some(Captured::Text { text, hash });
         }
     }
@@ -171,6 +215,9 @@ fn read_clipboard(state: &AppState) -> Option<Captured> {
         if let Ok(ImageData { width, height, bytes }) = clipboard.get_image() {
             let hash = image_hash(width, height, &bytes);
             if seen_recently(state, &hash) {
+                return None;
+            }
+            if is_deleted(state, &hash) {
                 return None;
             }
             return Some(Captured::Image {
@@ -245,4 +292,21 @@ pub fn start_polling(app: AppHandle, state: AppState) {
             thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deleted_matches_same_hash_and_seq_only() {
+        let entries = vec![("abc".to_string(), 7u32)];
+        assert!(deleted_matches(&entries, "abc", 7));
+        // New copy bumps the sequence: capturable again.
+        assert!(!deleted_matches(&entries, "abc", 8));
+        // Different content never matches.
+        assert!(!deleted_matches(&entries, "xyz", 7));
+        // Empty registry matches nothing.
+        assert!(!deleted_matches(&[], "abc", 7));
+    }
 }
