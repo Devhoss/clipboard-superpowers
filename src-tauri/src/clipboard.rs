@@ -295,7 +295,7 @@ fn read_html_for_text(expected: &str) -> Option<String> {
     let mut text = String::new();
     // Re-read and compare: a mid-read clipboard change must not attach
     // stale formatting to new text. Mismatch is a normal race — silent.
-    if formats::Unicode.read_clipboard(&mut text).is_err() || text != expected {
+    if formats::Unicode.read_clipboard(&mut text).is_err() || text.trim() != expected.trim() {
         return None;
     }
     let mut raw: Vec<u8> = Vec::new();
