@@ -247,13 +247,17 @@ function App() {
 
   // Card actions, lifted here so mouse AND keyboard share one path (PR1).
   // Same behavior as before the lift: optimistic updates, errors to console.
+  // PR4: formatted cards write both flavors (rich paste into Word, plain
+  // into Notepad). Plain cards keep the exact old path.
   const copyItem = useCallback(
     (item: ClipboardItem) => {
       moveToTop(item);
       const p =
         item.kind === "image"
           ? api.copyImageToClipboard(item.content)
-          : api.copyToClipboard(item.content);
+          : item.html
+            ? api.copyRichToClipboard(item.content, item.html)
+            : api.copyToClipboard(item.content);
       p.catch(console.error);
     },
     [moveToTop],
