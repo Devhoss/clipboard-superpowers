@@ -8,6 +8,7 @@ import type { ClipboardItem } from "@/lib/types";
 export function HistoryList({
   items,
   selectedIndex,
+  scrollKey,
   onCopy,
   onPin,
   onDelete,
@@ -15,6 +16,8 @@ export function HistoryList({
 }: {
   items: ClipboardItem[];
   selectedIndex: number;
+  /** Bumped by keyboard moves only — hover highlights without yanking scroll. */
+  scrollKey: number;
   onCopy: (item: ClipboardItem) => void;
   onPin: (item: ClipboardItem) => void;
   onDelete: (item: ClipboardItem) => void;
@@ -23,11 +26,16 @@ export function HistoryList({
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Keep the selected card in view while arrowing through the list.
+  // Deliberately keyed on scrollKey (keyboard), NOT selectedIndex:
+  // mouse hover also changes selection (highlight), and scrolling to it
+  // made the list jump under the cursor.
   useEffect(() => {
+    if (scrollKey <= 0) return;
     containerRef.current
       ?.querySelector(`[data-index="${selectedIndex}"]`)
       ?.scrollIntoView({ block: "nearest" });
-  }, [selectedIndex]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollKey]);
 
   return (
     <div

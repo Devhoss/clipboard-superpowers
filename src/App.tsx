@@ -52,6 +52,9 @@ function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   // Keyboard selection (PR1). Index into `visible` below, not the full list.
   const [selectedIndex, setSelectedIndex] = useState(0);
+  // Bumped on arrow-key moves so the list scrolls to follow the keyboard.
+  // Hover changes selectedIndex (highlight) without touching this.
+  const [scrollKey, setScrollKey] = useState(0);
   const selectedRef = useRef(0);
   selectedRef.current = selectedIndex;
   const viewRef = useRef(view);
@@ -141,6 +144,7 @@ function App() {
         e.preventDefault();
         const delta = e.key === "ArrowDown" ? 1 : -1;
         setSelectedIndex((i) => moveSelection(i, delta, rows.length));
+        setScrollKey((k) => k + 1);
       } else if (e.key === "Enter") {
         // Enter is inert in a single-line search box, so copying the
         // selected card from there is safe and useful.
@@ -360,6 +364,7 @@ function App() {
               <HistoryList
                 items={visible}
                 selectedIndex={selectedIndex}
+                scrollKey={scrollKey}
                 onCopy={copyItem}
                 onPin={pinItem}
                 onDelete={removeItem}
