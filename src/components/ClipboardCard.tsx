@@ -51,14 +51,6 @@ export function ClipboardCard({
         <div className="flex min-w-0 items-center gap-1.5">
           {item.pinned && <Pin className="size-3 text-amber-400" />}
           <CategoryLabel category={item.category} dot={colorValue} />
-          {item.html && (
-            <span
-              title="Carries formatting — click copies text + HTML, paste into Word keeps styles"
-              className="rounded-full border border-primary/30 bg-primary/10 px-1.5 py-px text-[9px] font-semibold tracking-wide text-primary"
-            >
-              RICH
-            </span>
-          )}
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
           <span className="mr-1 text-[10px] text-muted-foreground">{formatTime(item.created_at)}</span>
