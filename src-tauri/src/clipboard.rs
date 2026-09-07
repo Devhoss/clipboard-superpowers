@@ -7,8 +7,8 @@ use arboard::{Clipboard, ImageData};
 use chrono::Utc;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::categorize::{categorize, hash_content};
-use crate::db::{insert_item, open_db, ClipboardItem};
+use crate::categorize::{categorize, hash_content, is_secret};
+use crate::db::{expire_secrets, insert_item, open_db, ClipboardItem};
 use crate::richtext::{parse_cf_html, sanitize_fragment};
 use crate::settings::Settings;
 
@@ -21,6 +21,9 @@ pub const MAX_HTML_CHARS: usize = 32_000;
 /// lands within a tick or two (300ms); after the window expires an identical
 /// external copy counts as a genuine re-copy and bumps to the top.
 pub const SUPPRESS_WINDOW_SECS: u64 = 2;
+/// How long a captured secret survives when the user turned skipping off
+/// (PR3). Fixed — no setting: brief enough to be safe, long enough to paste.
+pub const SECRET_TTL_SECS: i64 = 60;
 
 /// Shared so `copy_to_clipboard` can suppress re-capturing our own writes.
 /// Time-bound: a permanent hash would swallow legitimate re-copies of the
@@ -257,6 +260,36 @@ fn capture_and_store(
     };
     match captured {
         Captured::Text { text, hash } => {
+            // Secret sweep runs every tick (PR3): one cheap DELETE keeps the
+            // 60s TTL honest even when nothing new is captured.
+            let cutoff = (Utc::now() - chrono::Duration::seconds(SECRET_TTL_SECS))
+                .to_rfc3339();
+            if let Err(e) = expire_secrets(conn, &cutoff) {
+                eprintln!("clipboard-superpowers: secret expiry failed: {e}");
+            }
+            if is_secret(&text) {
+                if state.settings.lock().unwrap().skip_secrets {
+                    // Drop silently but suppress the hash — otherwise the
+                    // poller re-reads and re-drops the same secret every tick
+                    // after the 2s window expires.
+                    suppress_hash(state, &hash);
+                    return;
+                }
+                // Captured with the secret category: visible for pasting,
+                // gone after SECRET_TTL_SECS via the sweep above.
+                let item = ClipboardItem {
+                    id: 0,
+                    content: text,
+                    content_hash: hash.clone(),
+                    category: "secret".into(),
+                    kind: "text".into(),
+                    pinned: false,
+                    created_at: Utc::now().to_rfc3339(),
+                    html: None,
+                };
+                store_and_emit(app, state, conn, item, hash);
+                return;
+            }
             // HTML flavor is read in a second clipboard open (arboard holds
             // its own handle while reading text — Windows allows one opener).
             // The text is re-read and compared so a mid-read clipboard change
