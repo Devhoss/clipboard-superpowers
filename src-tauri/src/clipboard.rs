@@ -9,7 +9,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::categorize::{categorize, hash_content};
 use crate::db::{insert_item, open_db, ClipboardItem};
-use crate::richtext::{parse_cf_html, sanitize_fragment};
+use crate::richtext::sanitize_fragment;
 use crate::settings::Settings;
 
 pub const POLL_INTERVAL_MS: u64 = 300;
@@ -293,16 +293,22 @@ fn read_html_for_text(expected: &str) -> Option<String> {
     let _guard = CLIPBOARD_LOCK.lock().unwrap();
     let _clip = Clipboard::new_attempts(3).ok()?;
     let mut text = String::new();
-    formats::Unicode.read_clipboard(&mut text).ok()?;
-    if text != expected {
+    // Re-read and compare: a mid-read clipboard change must not attach
+    // stale formatting to new text. Mismatch is a normal race — silent.
+    if formats::Unicode.read_clipboard(&mut text).is_err() || text != expected {
         return None;
     }
     let mut raw: Vec<u8> = Vec::new();
-    formats::Html::new()?
-        .read_clipboard(&mut raw)
-        .ok()?;
-    let fragment = parse_cf_html(&raw)?;
-    let clean = sanitize_fragment(&fragment);
+    // Absent flavor is the common case (plain-text copies) — silent too.
+    if formats::Html::new()?.read_clipboard(&mut raw).is_err() {
+        return None;
+    }
+    // NOTE: clipboard-win's get_html already slices out the fragment using
+    // the header offsets — `raw` is the bare fragment, NOT a full CF_HTML
+    // document. Parsing it again always fails (found live: real Chrome
+    // bytes rejected). parse_cf_html/build_cf_html remain the write path.
+    let fragment = std::str::from_utf8(&raw).ok()?;
+    let clean = sanitize_fragment(fragment);
     if clean.trim().is_empty() || clean.len() > MAX_HTML_CHARS {
         return None;
     }
