@@ -9,6 +9,8 @@ export interface ClipboardItem {
   kind: Kind;
   pinned: boolean;
   created_at: string;
+  /** Sanitized HTML flavor (PR4). Null = plain text. */
+  html: string | null;
 }
 
 export const CATEGORIES: Category[] = ["plain", "link", "code", "color", "email", "image"];

@@ -97,6 +97,50 @@ pub fn copy_to_clipboard(
     Ok(())
 }
 
+/// Copy text AND its sanitized HTML flavor back to the clipboard (PR4).
+/// Word/Notion/Discord read the HTML flavor and keep formatting; Notepad
+/// reads the text flavor and degrades gracefully. Same bump + suppress +
+/// emit tail as `copy_to_clipboard` (mirrors the `copy_image_to_clipboard`
+/// precedent — one shared shape, not a refactor of unrelated commands).
+#[tauri::command]
+pub fn copy_rich_to_clipboard(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    text: String,
+    html: String,
+) -> Result<(), String> {
+    let hash = crate::categorize::hash_content(text.as_bytes());
+    write_with_retry(|cb| cb.set_text(text.clone()))?;
+    // HTML second, under the process gate: without it a poll tick can wedge
+    // on 1418 mid-write. A failed flavor write still leaves the text flavor
+    // in place — degrade to plain, don't fail the whole copy.
+    if let Err(e) = write_html_flavor(&crate::richtext::build_cf_html(&html)) {
+        eprintln!("clipboard-superpowers: HTML flavor write failed ({e}), text kept");
+    }
+    let conn = db::open_db(&state.db_path.to_string_lossy()).map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    match db::touch_by_hash(&conn, &hash, &now).map_err(|e| e.to_string())? {
+        Some(row) => {
+            suppress_hash(&state, &hash);
+            let _ = app.emit("clipboard:new-item", &row);
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+/// Write a full CF_HTML document to the `HTML Format` flavor.
+fn write_html_flavor(doc: &str) -> Result<(), String> {
+    use clipboard_win::{Clipboard, Setter};
+    let _guard = crate::clipboard::CLIPBOARD_LOCK.lock().unwrap();
+    let _clip = Clipboard::new_attempts(5).map_err(|e| e.to_string())?;
+    clipboard_win::formats::Html::new()
+        .ok_or_else(|| "HTML Format not registered".to_string())?
+        .write_clipboard(&doc.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn copy_image_to_clipboard(
     state: State<'_, AppState>,

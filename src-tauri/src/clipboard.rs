@@ -9,10 +9,14 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::categorize::{categorize, hash_content};
 use crate::db::{insert_item, open_db, ClipboardItem};
+use crate::richtext::{parse_cf_html, sanitize_fragment};
 use crate::settings::Settings;
 
 pub const POLL_INTERVAL_MS: u64 = 300;
 pub const MAX_ITEMS: i64 = 1000;
+/// Cap for a captured HTML flavor (chars). Full email bodies can be megabytes;
+/// beyond this the item stays plain text. Applies after sanitizing.
+pub const MAX_HTML_CHARS: usize = 32_000;
 /// How long our own clipboard writes are ignored by the poller. Our write
 /// lands within a tick or two (300ms); after the window expires an identical
 /// external copy counts as a genuine re-copy and bumps to the top.
@@ -157,8 +161,18 @@ fn store_and_emit(
     match insert_item(conn, &item, max_items(state)) {
         Ok(outcome) => {
             suppress_hash(state, &hash);
-            let mut emitted = item;
-            emitted.id = outcome.id;
+            // Emit the STORED row, not the freshly built item: the builder
+            // always has pinned=false, so emitting it visually unpinned a
+            // card whenever our own copy was re-captured after the suppress
+            // window (pin held in DB, UI showed unpinned).
+            let emitted = match crate::db::get_by_hash(conn, &hash) {
+                Ok(Some(row)) => row,
+                _ => {
+                    let mut fallback = item;
+                    fallback.id = outcome.id;
+                    fallback
+                }
+            };
             let _ = app.emit("clipboard:new-item", &emitted);
         }
         Err(e) => {
@@ -243,6 +257,11 @@ fn capture_and_store(
     };
     match captured {
         Captured::Text { text, hash } => {
+            // HTML flavor is read in a second clipboard open (arboard holds
+            // its own handle while reading text — Windows allows one opener).
+            // The text is re-read and compared so a mid-read clipboard change
+            // can't attach stale formatting to new text.
+            let html = read_html_for_text(&text);
             let category = categorize(&text).to_string();
             let item = ClipboardItem {
                 id: 0,
@@ -252,6 +271,7 @@ fn capture_and_store(
                 kind: "text".into(),
                 pinned: false,
                 created_at: Utc::now().to_rfc3339(),
+                html,
             };
             store_and_emit(app, state, conn, item, hash);
         }
@@ -267,10 +287,92 @@ fn capture_and_store(
                 kind: "image".into(),
                 pinned: false,
                 created_at: Utc::now().to_rfc3339(),
+                html: None,
             };
             store_and_emit(app, state, conn, item, hash);
         }
     }
+}
+
+/// Get the usable fragment out of whatever `formats::Html` handed us.
+/// Pure (no clipboard access) so it can be unit-tested against captured
+/// real-world bytes. See `read_html_for_text` for why both shapes exist.
+///
+/// Rejects degenerate inputs instead of banking them:
+/// - full documents with stale offsets (header kept as text otherwise),
+/// - fragments starting mid-attribute (`e: ; --tw-...;">x</li></ul>` — the
+///   StartFragment offset can land inside a tag; the dangling attribute text
+///   would render as visible CSS garbage),
+/// - tag-free text (no formatting to keep — stays a plain card).
+/// A rejected capture stores NULL, so a re-copy can only flip plain→rich,
+/// never rich→garbage→rich.
+fn extract_fragment(raw: &[u8]) -> Option<String> {
+    if let Some(frag) = parse_cf_html(raw) {
+        return first_element_from(&frag);
+    }
+    // Not a parseable document: could be a bare fragment, or a document with
+    // stale offsets whose header would otherwise leak in as text (seen live:
+    // "Version:0.9 StartHTML:..." stored in the DB). Drop header lines.
+    let text = std::str::from_utf8(raw).ok()?;
+    let body = match text.find('<') {
+        Some(0) => text,
+        Some(i) => &text[i..],
+        None => return None,
+    };
+    // Header lines end at the first tag; but a bare mid-attribute slice has
+    // no header — first_element_from still rejects it below.
+    first_element_from(body)
+}
+
+/// Trim to the first real element. Returns None when there is no opening
+/// formatting tag — closing tags alone (`</li></ul>`) or bare text carry no
+/// recoverable formatting.
+fn first_element_from(frag: &str) -> Option<String> {
+    let start = frag.find('<')?;
+    let frag = &frag[start..];
+    const TAGS: [&str; 19] = [
+        "h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "span", "b", "strong",
+        "i", "em", "u", "a", "ul", "ol", "li", "pre",
+    ];
+    let lower = frag.to_lowercase();
+    let ok = TAGS.iter().any(|t| {
+        lower.contains(&format!("<{t}>"))
+            || lower.contains(&format!("<{t} "))
+    });
+    ok.then(|| frag.to_string())
+}
+
+/// Read the `HTML Format` flavor for `expected` text (PR4).
+/// Returns the sanitized fragment, or None when the clipboard holds no HTML,
+/// the text moved on mid-read, or the fragment is empty/oversized.
+/// Plain-text copies are unaffected — this only ever ADDS formatting.
+fn read_html_for_text(expected: &str) -> Option<String> {
+    use clipboard_win::{formats, Clipboard, Getter};
+    let _guard = CLIPBOARD_LOCK.lock().unwrap();
+    let _clip = Clipboard::new_attempts(3).ok()?;
+    let mut text = String::new();
+    // Re-read and compare: a mid-read clipboard change must not attach
+    // stale formatting to new text. Mismatch is a normal race — silent.
+    if formats::Unicode.read_clipboard(&mut text).is_err() || text.trim() != expected.trim() {
+        return None;
+    }
+    let mut raw: Vec<u8> = Vec::new();
+    // Absent flavor is the common case (plain-text copies) — silent too.
+    if formats::Html::new()?.read_clipboard(&mut raw).is_err() {
+        return None;
+    }
+    // clipboard-win is inconsistent here (proven live): sometimes `raw` is a
+    // full CF_HTML document with the Version:/StartFragment: header, sometimes
+    // the already-sliced bare fragment. Try the document parse first — it
+    // validates offsets — and fall back to the raw bytes as a fragment.
+    // Parsing unconditionally broke real Chrome copies; storing unconditionally
+    // banks header garbage (seen live: "Version:0.9 StartHTML:..." in the DB).
+    let fragment = extract_fragment(&raw)?;
+    let clean = sanitize_fragment(&fragment);
+    if clean.trim().is_empty() || clean.len() > MAX_HTML_CHARS {
+        return None;
+    }
+    Some(clean)
 }
 
 pub fn start_polling(app: AppHandle, state: AppState) {
@@ -308,5 +410,44 @@ mod tests {
         assert!(!deleted_matches(&entries, "xyz", 7));
         // Empty registry matches nothing.
         assert!(!deleted_matches(&[], "abc", 7));
+    }
+
+    #[test]
+    fn extract_fragment_handles_full_document_and_bare_fragment() {
+        use crate::richtext::build_cf_html;
+        // Shape 1 (seen live): full CF_HTML document with header.
+        let doc = build_cf_html("<b>hi</b>");
+        assert_eq!(extract_fragment(doc.as_bytes()).as_deref(), Some("<b>hi</b>"));
+        // Shape 2 (seen live): already-sliced bare fragment, no header.
+        assert_eq!(
+            extract_fragment(b"<h1>x</h1>").as_deref(),
+            Some("<h1>x</h1>")
+        );
+        // Garbage in: None (caller stores nothing).
+        assert_eq!(extract_fragment(b"\xff\xfe binary").as_deref(), None);
+    }
+
+    #[test]
+    fn extract_fragment_rejects_degenerate_shapes() {
+        // Live: StartFragment offset landed mid-attribute — dangling CSS
+        // would otherwise render as visible garbage text.
+        let mid_tag = b"e: ; --tw-numeric-spacing: ; font-size: 1.25rem;\">French bulldog</li></ul>";
+        assert_eq!(extract_fragment(mid_tag).as_deref(), None);
+        // Closing tags alone carry no recoverable formatting.
+        assert_eq!(extract_fragment(b"</li></ul>").as_deref(), None);
+        // Tag-free text is not HTML — stays a plain card.
+        assert_eq!(extract_fragment(b"just text").as_deref(), None);
+        // Live (link card): full document with stale offsets — header must
+        // not leak in as text, anchor must survive.
+        let stale = b"Version:0.9
+\nStartHTML:00000097
+\nEndHTML:00000295
+\nStartFragment:00000131
+\nEndFragment:00000259
+\n
+\n<a href=\"https://x.com\">x</a>";
+        let got = extract_fragment(stale).unwrap();
+        assert!(!got.contains("Version"), "header leaked: {got:?}");
+        assert!(got.contains("<a href=\"https://x.com\">"), "anchor lost: {got:?}");
     }
 }

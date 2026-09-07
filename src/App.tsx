@@ -23,6 +23,19 @@ const appWindow =
 
 const THEME_STORAGE_KEY = "clipboard-superpowers-theme";
 
+/** Pinned cards always float above history, newest first within each group.
+// Backend fetch already orders this way, but optimistic local moves (click
+// to copy, live captures) prepended blindly and stranded pinned cards below
+// fresh items — every local mutation goes through placeItem instead. */
+function byPinnedThenRecent(a: ClipboardItem, b: ClipboardItem): number {
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+  return b.created_at.localeCompare(a.created_at);
+}
+
+function placeItem(prev: ClipboardItem[], item: ClipboardItem): ClipboardItem[] {
+  return [item, ...prev.filter((i) => i.id !== item.id)].sort(byPinnedThenRecent);
+}
+
 function getInitialTheme(): ThemeMode {
   const stored = localStorage.getItem(THEME_STORAGE_KEY);
   return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
@@ -56,7 +69,7 @@ function App() {
     p.then((rows) => {
       // Drop stale responses when typing fast (last-wins race).
       if (requestId.current === id) {
-        setItems(rows);
+        setItems([...rows].sort(byPinnedThenRecent));
         setVisibleCount(50);
         setSelectedIndex(0);
       }
@@ -89,10 +102,7 @@ function App() {
   useEffect(() => {
     const unlisten = listen<ClipboardItem>(EVENTS.newItem, (e) => {
       const item = e.payload;
-      setItems((prev) => {
-        const rest = prev.filter((i) => i.id !== item.id);
-        return [item, ...rest];
-      });
+      setItems((prev) => placeItem(prev, item));
     });
     return () => {
       unlisten.then((fn) => fn());
@@ -239,21 +249,26 @@ function App() {
     setSelectedIndex(0);
   }, []);
 
-  // Instant move-to-top on card click. The backend bump + live event follow
-  // within a tick and dedupe by id — the UI never waits for the round-trip.
+  // Instant placement on card click (top of its pinned/unpinned group — never
+  // above pinned cards). The backend bump + live event follow within a tick
+  // and dedupe by id — the UI never waits for the round-trip.
   const moveToTop = useCallback((item: ClipboardItem) => {
-    setItems((prev) => [item, ...prev.filter((i) => i.id !== item.id)]);
+    setItems((prev) => placeItem(prev, item));
   }, []);
 
   // Card actions, lifted here so mouse AND keyboard share one path (PR1).
   // Same behavior as before the lift: optimistic updates, errors to console.
+  // PR4: formatted cards write both flavors (rich paste into Word, plain
+  // into Notepad). Plain cards keep the exact old path.
   const copyItem = useCallback(
     (item: ClipboardItem) => {
       moveToTop(item);
       const p =
         item.kind === "image"
           ? api.copyImageToClipboard(item.content)
-          : api.copyToClipboard(item.content);
+          : item.html
+            ? api.copyRichToClipboard(item.content, item.html)
+            : api.copyToClipboard(item.content);
       p.catch(console.error);
     },
     [moveToTop],
