@@ -188,6 +188,7 @@ fn store_and_emit(
 enum Captured {
     Text { text: String, hash: String },
     Image { width: usize, height: usize, bytes: Vec<u8>, hash: String },
+    Files { paths: Vec<String>, hash: String },
 }
 
 /// Read phase: opens the clipboard, copies bytes out, releases the gate.
@@ -206,9 +207,9 @@ fn read_clipboard(state: &AppState) -> Option<Captured> {
     // NOTE: text wins when the clipboard holds both text and an image
     // (common when copying images from browsers). Documented v1 tradeoff —
     // image is only stored when get_text() fails.
-    let (want_text, want_images) = {
+    let (want_text, want_images, want_files) = {
         let s = state.settings.lock().unwrap();
-        (s.capture_text, s.capture_images)
+        (s.capture_text, s.capture_images, s.capture_files)
     };
     if want_text {
         if let Ok(text) = clipboard.get_text() {
@@ -245,7 +246,40 @@ fn read_clipboard(state: &AppState) -> Option<Captured> {
             });
         }
     }
+    // Files last, with the arboard handle AND the process gate dropped:
+    // clipboard-win opens the clipboard itself, Windows allows exactly one
+    // opener, and std Mutex is not reentrant (re-locking would deadlock).
+    // The gate is re-taken inside (new_attempts retries a 1418).
+    drop(clipboard);
+    drop(_guard);
+    if want_files {
+        if let Some(paths) = read_file_list() {
+            let joined = paths.join("\n");
+            let hash = hash_content(joined.as_bytes());
+            if seen_recently(state, &hash) {
+                return None;
+            }
+            return Some(Captured::Files { paths, hash });
+        }
+    }
     None
+}
+
+/// Read CF_HDROP via clipboard-win (PR5). Takes CLIPBOARD_LOCK itself —
+/// call only after arboard's handle is dropped (see above).
+fn read_file_list() -> Option<Vec<String>> {
+    use clipboard_win::{formats, Clipboard, Getter};
+    let _guard = CLIPBOARD_LOCK.lock().unwrap();
+    let _clip = Clipboard::new_attempts(3).ok()?;
+    let mut paths: Vec<String> = Vec::new();
+    formats::FileList.read_clipboard(&mut paths).ok()?;
+    if paths.is_empty() {
+        return None;
+    }
+    // A 10k-file multi-select would store megabytes of paths. 500 keeps
+    // real selections intact while bounding the row.
+    paths.truncate(500);
+    Some(paths)
 }
 
 fn capture_and_store(
@@ -321,6 +355,21 @@ fn capture_and_store(
                 pinned: false,
                 created_at: Utc::now().to_rfc3339(),
                 html: None,
+            };
+            store_and_emit(app, state, conn, item, hash);
+        }
+        Captured::Files { paths, hash } => {
+            // content is the plain path list: clicking the card copies paths
+            // as text through the existing copy path (same hash → bump, no
+            // duplicate row). Sizes come lazily via file_meta (PR5).
+            let item = ClipboardItem {
+                id: 0,
+                content: paths.join("\n"),
+                content_hash: hash.clone(),
+                category: "file".into(),
+                kind: "file".into(),
+                pinned: false,
+                created_at: Utc::now().to_rfc3339(),
             };
             store_and_emit(app, state, conn, item, hash);
         }

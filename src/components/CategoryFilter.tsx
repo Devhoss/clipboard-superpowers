@@ -12,6 +12,7 @@ export const CATEGORY_META: Record<Category, { label: string; plural: string; do
   email: { label: "Email", plural: "Emails", dot: "#ff9f0a", text: "text-amber-300" },
   image: { label: "Image", plural: "Images", dot: "#30d158", text: "text-green-300" },
   secret: { label: "Secret", plural: "Secrets", dot: "#ff453a", text: "text-red-300" },
+  file: { label: "File", plural: "Files", dot: "#64d2ff", text: "text-sky-200" },
 };
 
 export function CategoryLabel({ category, dot }: { category: string; dot?: string | null }) {

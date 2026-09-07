@@ -215,6 +215,64 @@ pub fn copy_image_to_clipboard(
     Ok(())
 }
 
+/// File metadata for file cards (PR5): total size + what's still on disk.
+/// Stat-only — never reads file contents, never follows the open.
+#[derive(serde::Serialize)]
+pub struct FileMeta {
+    pub total_bytes: u64,
+    pub existing: usize,
+    pub missing: Vec<String>,
+}
+
+#[tauri::command]
+pub fn file_meta(paths: Vec<String>) -> FileMeta {
+    stat_paths(&paths)
+}
+
+fn stat_paths(paths: &[String]) -> FileMeta {
+    let mut total_bytes = 0u64;
+    let mut existing = 0usize;
+    let mut missing = Vec::new();
+    // Defensive cap mirrors the capture-side truncate.
+    for p in paths.iter().take(500) {
+        match std::fs::metadata(p) {
+            Ok(m) => {
+                existing += 1;
+                total_bytes += m.len();
+            }
+            Err(_) => missing.push(p.clone()),
+        }
+    }
+    FileMeta { total_bytes, existing, missing }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stat_paths_totals_sizes_and_flags_missing() {
+        let dir = std::env::temp_dir().join("clipboard-superpowers-pr5-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.txt");
+        let b = dir.join("b.bin");
+        std::fs::write(&a, vec![0u8; 100]).unwrap();
+        std::fs::write(&b, vec![0u8; 200]).unwrap();
+        let gone = dir.join("gone.txt").to_string_lossy().to_string();
+
+        let meta = stat_paths(&[
+            a.to_string_lossy().to_string(),
+            b.to_string_lossy().to_string(),
+            gone.clone(),
+        ]);
+        assert_eq!(meta.total_bytes, 300);
+        assert_eq!(meta.existing, 2);
+        assert_eq!(meta.missing, vec![gone]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// PNG bytes as base64 for rendering thumbnails in the webview.
 #[tauri::command]
 pub fn read_image_base64(state: State<'_, AppState>, path: String) -> Result<String, String> {

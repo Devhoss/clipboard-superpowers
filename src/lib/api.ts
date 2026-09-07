@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ClipboardItem, AppSettings, HistoryStats } from "./types";
+import type { ClipboardItem, AppSettings, HistoryStats, FileMeta } from "./types";
 
 export const api = {
   getHistory: (): Promise<ClipboardItem[]> => invoke("get_history"),
@@ -27,6 +27,8 @@ export const api = {
   clearHistory: (delete_pinned: boolean): Promise<number> =>
     invoke("clear_history", { deletePinned: delete_pinned }),
   getStats: (): Promise<HistoryStats> => invoke("get_stats"),
+  // PR5: stat-only metadata for a newline-joined path list. Never reads contents.
+  fileMeta: (paths: string[]): Promise<FileMeta> => invoke("file_meta", { paths }),
 };
 
 export const EVENTS = {

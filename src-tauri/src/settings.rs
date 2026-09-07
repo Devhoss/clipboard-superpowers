@@ -19,9 +19,18 @@ pub struct Settings {
     /// loading instead of failing parse and resetting the whole file.
     #[serde(default = "default_skip_secrets")]
     pub skip_secrets: bool,
+    /// Capture Explorer file copies (CF_HDROP) as file cards (PR5).
+    /// Old settings.json files lack this key — default on, same migration
+    /// pattern as skip_secrets.
+    #[serde(default = "default_true")]
+    pub capture_files: bool,
 }
 
 fn default_skip_secrets() -> bool {
+    true
+}
+
+fn default_true() -> bool {
     true
 }
 
@@ -35,6 +44,7 @@ impl Default for Settings {
             capture_images: true,
             hide_on_blur: true,
             skip_secrets: true,
+            capture_files: true,
         }
     }
 }
@@ -189,6 +199,22 @@ mod tests {
         assert!(parse_hotkey("Ctrl+Shift+7").is_ok());
         assert!(parse_hotkey("Alt+F9").is_ok());
         assert!(parse_hotkey("Super+V").is_ok());
+    }
+
+    #[test]
+    fn old_file_without_capture_files_loads_as_true() {
+        // Same migration guarantee as skip_secrets: a missing key must not
+        // fail the parse and wipe the user's existing preferences.
+        let old = r#"{
+            "hotkey": "Ctrl+Alt+V",
+            "max_items": 1000,
+            "launch_on_login": true,
+            "capture_text": true,
+            "capture_images": true,
+            "hide_on_blur": true
+        }"#;
+        let s: Settings = serde_json::from_str(old).unwrap();
+        assert!(s.capture_files);
     }
 
     #[test]
