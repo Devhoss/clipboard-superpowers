@@ -22,8 +22,10 @@ export const api = {
   getSettings: (): Promise<AppSettings> => invoke("get_settings"),
   updateSettings: (settings: AppSettings): Promise<AppSettings> =>
     invoke("update_settings", { settings }),
+  // Tauri camelCases multi-word arg keys (Rust `delete_pinned` <-> JS
+  // `deletePinned`) — this is currently the only command with one.
   clearHistory: (delete_pinned: boolean): Promise<number> =>
-    invoke("clear_history", { delete_pinned }),
+    invoke("clear_history", { deletePinned: delete_pinned }),
   getStats: (): Promise<HistoryStats> => invoke("get_stats"),
 };
 
