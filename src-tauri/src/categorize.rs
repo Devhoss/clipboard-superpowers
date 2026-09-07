@@ -17,6 +17,30 @@ const CODE_TOKENS: &[&str] = &[
     "return ", "public ", "private ", "#include", "SELECT ", "INSERT ",
 ];
 
+/// True for markdown list items (`- foo`, `* foo`, `1. foo`, `2) foo`).
+/// Chat/paste list indentation is prose structure, not code indentation —
+/// counting it classified bulleted Discord pastes as code (seen live).
+fn is_list_item(line: &str) -> bool {
+    let t = line.trim_start();
+    if t.starts_with("- ") || t.starts_with("* ") || t.starts_with("+ ") {
+        return true;
+    }
+    let mut chars = t.chars();
+    let mut digits = 0;
+    for c in chars.by_ref() {
+        if c.is_ascii_digit() {
+            digits += 1;
+        } else {
+            break;
+        }
+    }
+    if digits == 0 || digits > 9 {
+        return false;
+    }
+    let rest: String = chars.collect();
+    rest.starts_with(". ") || rest.starts_with(") ")
+}
+
 pub fn hash_content(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
@@ -43,13 +67,20 @@ pub fn categorize(s: &str) -> &'static str {
     }
     let line_count = trimmed.lines().count();
     let has_code_token = CODE_TOKENS.iter().any(|t| trimmed.contains(t));
+    // List-item indentation is prose structure — only real indentation counts,
+    // and even that needs a code token to convict (indentation alone used to
+    // classify bulleted chat pastes as code).
     let looks_indented = line_count >= 3
         && trimmed
             .lines()
-            .filter(|l| l.starts_with(' ') || l.starts_with('\t'))
+            .filter(|l| {
+                (l.starts_with(' ') || l.starts_with('\t')) && !is_list_item(l)
+            })
             .count()
             >= 2;
-    if looks_indented || (line_count >= 2 && has_code_token) || (has_code_token && trimmed.contains(';')) {
+    if has_code_token
+        && (looks_indented || line_count >= 2 || trimmed.contains(';'))
+    {
         return "code";
     }
     "plain"
@@ -63,6 +94,19 @@ mod tests {
     fn categorizes_link() {
         assert_eq!(categorize("https://example.com"), "link");
         assert_eq!(categorize("  http://foo.bar/baz?q=1  "), "link");
+    }
+
+    #[test]
+    fn bulleted_chat_pastes_are_plain_not_code() {
+        // Live: 22-line Discord paste, 10 indented lines, zero code tokens.
+        let chat = "hey guys @everyone this is a read only session\n\
+            @researcher do a deep search and read hermes agent docs\n\
+            1. Hermes skin system:\n               - E:\\hermes\\skins\\\n               - skin_engine.py\n            2. more items here\n               - nested note";
+        assert_eq!(categorize(chat), "plain");
+        // Indented prose without any token is plain too.
+        assert_eq!(categorize("a thought\n  continued gently\n  and more"), "plain");
+        // ...but real indented code still convicts via its tokens.
+        assert_eq!(categorize("if x:\n    return 1\n    return 2"), "code");
     }
 
     #[test]
