@@ -193,6 +193,12 @@ export function SettingsPanel({
           label="Capture images"
           hint="Screenshots and copied pictures"
         />
+        <Toggle
+          checked={draft.skip_secrets}
+          onChange={(v) => setDraft((d) => ({ ...d, skip_secrets: v }))}
+          label="Skip passwords & OTPs"
+          hint="Off keeps them 60 seconds, then auto-deletes"
+        />
       </Section>
 
       <Section title="History">

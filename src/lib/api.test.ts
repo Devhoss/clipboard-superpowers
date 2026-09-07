@@ -57,6 +57,7 @@ describe("api", () => {
       capture_text: true,
       capture_images: false,
       hide_on_blur: true,
+      skip_secrets: true,
     };
     await api.updateSettings(s);
     expect(mockedInvoke).toHaveBeenCalledWith("update_settings", { settings: s });

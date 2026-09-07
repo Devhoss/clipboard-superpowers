@@ -14,6 +14,15 @@ pub struct Settings {
     pub capture_images: bool,
     /// Hide the popup when it loses focus. Off = stays until Esc/hotkey.
     pub hide_on_blur: bool,
+    /// Skip passwords/OTPs/private keys before they touch the DB (PR3).
+    /// Old settings.json files lack this key — the serde default keeps them
+    /// loading instead of failing parse and resetting the whole file.
+    #[serde(default = "default_skip_secrets")]
+    pub skip_secrets: bool,
+}
+
+fn default_skip_secrets() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -25,6 +34,7 @@ impl Default for Settings {
             capture_text: true,
             capture_images: true,
             hide_on_blur: true,
+            skip_secrets: true,
         }
     }
 }
@@ -191,5 +201,31 @@ mod tests {
         s.normalize();
         assert_eq!(s.hotkey, "Ctrl+Alt+V");
         assert_eq!(s.max_items, 5000);
+    }
+
+    #[test]
+    fn old_file_without_skip_secrets_loads_as_true() {
+        // Pre-PR3 settings.json has no skip_secrets key. It must load with
+        // the safe default instead of failing parse (which would wipe the
+        // user's hotkey and toggles back to defaults).
+        let old = r#"{
+            "hotkey": "Ctrl+Shift+V",
+            "max_items": 500,
+            "launch_on_login": false,
+            "capture_text": true,
+            "capture_images": true,
+            "hide_on_blur": false
+        }"#;
+        let s: Settings = serde_json::from_str(old).unwrap();
+        assert!(s.skip_secrets);
+        assert_eq!(s.hotkey, "Ctrl+Shift+V");
+    }
+
+    #[test]
+    fn explicit_skip_false_survives_round_trip() {
+        let mut s = Settings::default();
+        s.skip_secrets = false;
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(!back.skip_secrets);
     }
 }

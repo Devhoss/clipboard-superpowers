@@ -11,6 +11,19 @@ static RE_HEX_COLOR: LazyLock<Regex> =
 static RE_RGB: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*(,\s*[\d.]+\s*)?\)").unwrap()
 });
+// Secrets (PR3): key=value credential shapes, standalone OTP digits, PEM
+// private-key headers. The keyword must stand alone or be _-separated
+// (client_secret matches, mytoken doesn't) and must be followed by = or :
+// ("my password is long" doesn't) so normal prose and code survive.
+static RE_SECRET_KV: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:^|[^A-Za-z0-9])(passw(or)?d|passwd|pwd|api[-_]?key|secret|token)\b\s*[:=]\s*\S+")
+        .unwrap()
+});
+static RE_OTP: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4,8}$").unwrap());
+static RE_PEM_KEY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----").unwrap()
+});
 
 const CODE_TOKENS: &[&str] = &[
     "{", "}", "=>", "function ", "const ", "let ", "var ", "import ", "class ", "def ", "fn ",
@@ -39,6 +52,20 @@ fn is_list_item(line: &str) -> bool {
     }
     let rest: String = chars.collect();
     rest.starts_with(". ") || rest.starts_with(") ")
+}
+
+/// True when text looks like a credential worth protecting (PR3).
+/// Links and emails are checked first: a password-reset URL is a link,
+/// not a secret — swallowing it would be a false positive.
+pub fn is_secret(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if RE_LINK.is_match(trimmed) || RE_EMAIL.is_match(trimmed) {
+        return false;
+    }
+    RE_SECRET_KV.is_match(s) || RE_OTP.is_match(trimmed) || RE_PEM_KEY.is_match(s)
 }
 
 pub fn hash_content(data: &[u8]) -> String {
@@ -89,6 +116,37 @@ pub fn categorize(s: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_key_value_secrets() {
+        assert!(is_secret("password=hunter2"));
+        assert!(is_secret("Password: hunter2"));
+        assert!(is_secret("API_KEY=sk-live-abc123"));
+        assert!(is_secret("api-key: xyz"));
+        assert!(is_secret("token=eyJhbGciOiJIUzI1NiJ9"));
+        assert!(is_secret("client_secret=abc123")); // bare keyword needs = or :
+        assert!(is_secret("-----BEGIN RSA PRIVATE KEY-----\nMIIE..."));
+    }
+
+    #[test]
+    fn detects_standalone_otp() {
+        assert!(is_secret("482910"));
+        assert!(is_secret("  1234  "));
+    }
+
+    #[test]
+    fn rejects_lookalikes_and_non_secrets() {
+        // Near-miss identifiers must not nuke normal clips.
+        assert!(!is_secret("tokenize() the string"));
+        assert!(!is_secret("my password is long and memorable"));
+        assert!(!is_secret("order 482910 confirmed"));
+        assert!(!is_secret("123"));
+        assert!(!is_secret("123456789"));
+        // Links/emails win over secret patterns — a reset URL is a link.
+        assert!(!is_secret("https://example.com/reset?password=1"));
+        assert!(!is_secret("const x = 1;"));
+        assert!(!is_secret("hello world"));
+    }
 
     #[test]
     fn categorizes_link() {

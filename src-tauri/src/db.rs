@@ -120,6 +120,18 @@ pub fn prune_old_items(conn: &Connection, max_items: i64) -> Result<()> {
     Ok(())
 }
 
+/// Delete unpinned secrets older than `cutoff` (RFC3339, PR3).
+/// Pinned rows are immune — pinning a secret is an explicit keep.
+/// Returns the number of rows removed.
+pub fn expire_secrets(conn: &Connection, cutoff: &str) -> Result<usize> {
+    let removed = conn.execute(
+        "DELETE FROM clipboard_history
+         WHERE category = 'secret' AND pinned = 0 AND created_at < ?1",
+        params![cutoff],
+    )?;
+    Ok(removed)
+}
+
 const ITEM_COLUMNS: &str = "id, content, content_hash, category, kind, pinned, created_at, html";
 
 fn row_to_item(row: &rusqlite::Row) -> Result<ClipboardItem> {
@@ -261,6 +273,39 @@ mod tests {
         insert_item(&conn, &richer, 1000).unwrap();
         let got = get_all_items(&conn, 1000).unwrap();
         assert_eq!(got[0].html.as_deref(), Some("<i>hello</i>"));
+    }
+
+    #[test]
+    fn expire_secrets_removes_only_old_unpinned_secrets() {
+        let conn = open_in_memory_db().unwrap();
+        let mut old_secret = item("password=x", "2026-01-01T00:00:00Z");
+        old_secret.category = "secret".into();
+        insert_item(&conn, &old_secret, 1000).unwrap();
+        let mut fresh_secret = item("token=y", "2026-01-01T00:05:00Z");
+        fresh_secret.category = "secret".into();
+        insert_item(&conn, &fresh_secret, 1000).unwrap();
+        let mut pinned_old = item("password=z", "2026-01-01T00:00:00Z");
+        pinned_old.category = "secret".into();
+        insert_item(&conn, &pinned_old, 1000).unwrap();
+        let pinned_id = get_all_items(&conn, 1000)
+            .unwrap()
+            .into_iter()
+            .find(|i| i.content == "password=z")
+            .unwrap()
+            .id;
+        toggle_pin(&conn, pinned_id).unwrap();
+        insert_item(&conn, &item("hello", "2026-01-01T00:00:00Z"), 1000).unwrap();
+
+        let removed = expire_secrets(&conn, "2026-01-01T00:02:00Z").unwrap();
+        assert_eq!(removed, 1);
+        let remaining: Vec<String> = get_all_items(&conn, 1000)
+            .unwrap()
+            .into_iter()
+            .map(|i| i.content)
+            .collect();
+        assert!(remaining.contains(&"token=y".to_string()));
+        assert!(remaining.contains(&"password=z".to_string()));
+        assert!(remaining.contains(&"hello".to_string()));
     }
 
     #[test]

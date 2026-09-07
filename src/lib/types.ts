@@ -1,4 +1,4 @@
-export type Category = "plain" | "link" | "code" | "color" | "email" | "image";
+export type Category = "plain" | "link" | "code" | "color" | "email" | "image" | "secret";
 export type Kind = "text" | "image";
 
 export interface ClipboardItem {
@@ -13,7 +13,7 @@ export interface ClipboardItem {
   html: string | null;
 }
 
-export const CATEGORIES: Category[] = ["plain", "link", "code", "color", "email", "image"];
+export const CATEGORIES: Category[] = ["plain", "link", "code", "color", "email", "image", "secret"];
 
 export interface AppSettings {
   hotkey: string;
@@ -22,6 +22,7 @@ export interface AppSettings {
   capture_text: boolean;
   capture_images: boolean;
   hide_on_blur: boolean;
+  skip_secrets: boolean;
 }
 
 export interface HistoryStats {
