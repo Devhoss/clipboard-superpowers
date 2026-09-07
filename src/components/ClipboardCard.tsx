@@ -46,15 +46,25 @@ export function ClipboardCard({
           <CardAction label="Delete" onClick={onDelete} destructive><Trash2 /></CardAction>
         </div>
       </div>
-      <pre
-        className={cn(
-          "mt-2 line-clamp-3 whitespace-pre-wrap break-words text-[13px] leading-relaxed",
-          isColor || item.category === "code" ? "font-mono" : "font-sans font-medium",
-        )}
-      >
-        {item.content.slice(0, 500)}
-        {item.content.length > 500 ? "…" : ""}
-      </pre>
+      {item.html ? (
+        <div
+          aria-label="Formatted preview"
+          className="mt-2 line-clamp-3 break-words text-[13px] leading-relaxed"
+          // Backend-sanitized (ammonia allowlist, scripts/handlers stripped).
+          // Never render raw clipboard HTML here — see richtext.rs.
+          dangerouslySetInnerHTML={{ __html: item.html.slice(0, 2000) }}
+        />
+      ) : (
+        <pre
+          className={cn(
+            "mt-2 line-clamp-3 whitespace-pre-wrap break-words text-[13px] leading-relaxed",
+            isColor || item.category === "code" ? "font-mono" : "font-sans font-medium",
+          )}
+        >
+          {item.content.slice(0, 500)}
+          {item.content.length > 500 ? "…" : ""}
+        </pre>
+      )}
     </div>
   );
 }

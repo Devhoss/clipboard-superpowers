@@ -9,10 +9,14 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::categorize::{categorize, hash_content};
 use crate::db::{insert_item, open_db, ClipboardItem};
+use crate::richtext::{parse_cf_html, sanitize_fragment};
 use crate::settings::Settings;
 
 pub const POLL_INTERVAL_MS: u64 = 300;
 pub const MAX_ITEMS: i64 = 1000;
+/// Cap for a captured HTML flavor (chars). Full email bodies can be megabytes;
+/// beyond this the item stays plain text. Applies after sanitizing.
+pub const MAX_HTML_CHARS: usize = 32_000;
 /// How long our own clipboard writes are ignored by the poller. Our write
 /// lands within a tick or two (300ms); after the window expires an identical
 /// external copy counts as a genuine re-copy and bumps to the top.
@@ -243,6 +247,11 @@ fn capture_and_store(
     };
     match captured {
         Captured::Text { text, hash } => {
+            // HTML flavor is read in a second clipboard open (arboard holds
+            // its own handle while reading text — Windows allows one opener).
+            // The text is re-read and compared so a mid-read clipboard change
+            // can't attach stale formatting to new text.
+            let html = read_html_for_text(&text);
             let category = categorize(&text).to_string();
             let item = ClipboardItem {
                 id: 0,
@@ -252,6 +261,7 @@ fn capture_and_store(
                 kind: "text".into(),
                 pinned: false,
                 created_at: Utc::now().to_rfc3339(),
+                html,
             };
             store_and_emit(app, state, conn, item, hash);
         }
@@ -267,10 +277,36 @@ fn capture_and_store(
                 kind: "image".into(),
                 pinned: false,
                 created_at: Utc::now().to_rfc3339(),
+                html: None,
             };
             store_and_emit(app, state, conn, item, hash);
         }
     }
+}
+
+/// Read the `HTML Format` flavor for `expected` text (PR4).
+/// Returns the sanitized fragment, or None when the clipboard holds no HTML,
+/// the text moved on mid-read, or the fragment is empty/oversized.
+/// Plain-text copies are unaffected — this only ever ADDS formatting.
+fn read_html_for_text(expected: &str) -> Option<String> {
+    use clipboard_win::{formats, Clipboard, Getter};
+    let _guard = CLIPBOARD_LOCK.lock().unwrap();
+    let _clip = Clipboard::new_attempts(3).ok()?;
+    let mut text = String::new();
+    formats::Unicode.read_clipboard(&mut text).ok()?;
+    if text != expected {
+        return None;
+    }
+    let mut raw: Vec<u8> = Vec::new();
+    formats::Html::new()?
+        .read_clipboard(&mut raw)
+        .ok()?;
+    let fragment = parse_cf_html(&raw)?;
+    let clean = sanitize_fragment(&fragment);
+    if clean.trim().is_empty() || clean.len() > MAX_HTML_CHARS {
+        return None;
+    }
+    Some(clean)
 }
 
 pub fn start_polling(app: AppHandle, state: AppState) {

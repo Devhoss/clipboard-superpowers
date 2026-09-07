@@ -10,6 +10,7 @@ pub struct ClipboardItem {
     pub kind: String,         // text|image
     pub pinned: bool,
     pub created_at: String, // RFC3339
+    pub html: Option<String>, // sanitized HTML flavor (PR4), None = plain text
 }
 
 #[derive(Debug)]
@@ -55,6 +56,15 @@ fn init_schema(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_category ON clipboard_history(category)",
         [],
     )?;
+    // PR4 migration: formatted-HTML flavor alongside plain text. Guarded so
+    // existing databases (created before this column) migrate in place —
+    // ADD COLUMN on a table that already has it is an error, hence the check.
+    let has_html: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('clipboard_history') WHERE name = 'html'")?
+        .exists([])?;
+    if !has_html {
+        conn.execute("ALTER TABLE clipboard_history ADD COLUMN html TEXT", [])?;
+    }
     Ok(())
 }
 
@@ -69,16 +79,17 @@ pub fn insert_item(conn: &Connection, item: &ClipboardItem, max_items: i64) -> R
         )
         .optional()?;
     conn.execute(
-        "INSERT INTO clipboard_history (content, content_hash, category, kind, pinned, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT(content_hash) DO UPDATE SET created_at = excluded.created_at",
+        "INSERT INTO clipboard_history (content, content_hash, category, kind, pinned, created_at, html)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(content_hash) DO UPDATE SET created_at = excluded.created_at, html = excluded.html",
         params![
             item.content,
             item.content_hash,
             item.category,
             item.kind,
             item.pinned as i32,
-            item.created_at
+            item.created_at,
+            item.html
         ],
     )?;
     // last_insert_rowid() is unreliable after ON CONFLICT DO UPDATE —
@@ -104,7 +115,7 @@ pub fn prune_old_items(conn: &Connection, max_items: i64) -> Result<()> {
     Ok(())
 }
 
-const ITEM_COLUMNS: &str = "id, content, content_hash, category, kind, pinned, created_at";
+const ITEM_COLUMNS: &str = "id, content, content_hash, category, kind, pinned, created_at, html";
 
 fn row_to_item(row: &rusqlite::Row) -> Result<ClipboardItem> {
     Ok(ClipboardItem {
@@ -115,6 +126,7 @@ fn row_to_item(row: &rusqlite::Row) -> Result<ClipboardItem> {
         kind: row.get(4)?,
         pinned: row.get::<_, i32>(5)? != 0,
         created_at: row.get(6)?,
+        html: row.get(7)?,
     })
 }
 
@@ -181,6 +193,7 @@ mod tests {
             kind: "text".into(),
             pinned: false,
             created_at: created_at.into(),
+            html: None,
         }
     }
 
@@ -206,6 +219,24 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].content, "dup", "bumped item must sort to top");
         assert_eq!(items[0].created_at, "2026-01-03T00:00:00Z");
+    }
+
+    #[test]
+    fn html_flavor_round_trips_and_updates_on_recopy() {
+        let conn = open_in_memory_db().unwrap();
+        let mut rich = item("hello", "2026-01-01T00:00:00Z");
+        rich.html = Some("<b>hello</b>".into());
+        insert_item(&conn, &rich, 1000).unwrap();
+        let got = get_all_items(&conn, 1000).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].html.as_deref(), Some("<b>hello</b>"));
+        // Plain re-copy of the same text clears stale formatting (latest wins).
+        let mut plain = item("hello", "2026-01-02T00:00:00Z");
+        plain.content_hash = "hash-hello".into();
+        insert_item(&conn, &plain, 1000).unwrap();
+        let got = get_all_items(&conn, 1000).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].html, None);
     }
 
     #[test]
