@@ -14,6 +14,9 @@ export const api = {
   // PR4: text + sanitized HTML flavor. Falls back to plain copy when html is null.
   copyRichToClipboard: (text: string, html: string): Promise<void> =>
     invoke("copy_rich_to_clipboard", { text, html }),
+  // PR2: copy-then-paste into the previous app.
+  pasteTextToPreviousApp: (text: string): Promise<void> =>
+    invoke("paste_text_to_previous_app", { text }),
   readImageBase64: (path: string): Promise<string> =>
     invoke("read_image_base64", { path }),
   getSettings: (): Promise<AppSettings> => invoke("get_settings"),

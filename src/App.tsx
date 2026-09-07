@@ -146,12 +146,13 @@ function App() {
         setSelectedIndex((i) => moveSelection(i, delta, rows.length));
         setScrollKey((k) => k + 1);
       } else if (e.key === "Enter") {
-        // Enter is inert in a single-line search box, so copying the
-        // selected card from there is safe and useful.
+        // Enter pastes into the previous app (PR2); click stays copy-only.
+        // Enter is inert in a single-line search box, so firing from there
+        // is safe and useful.
         const item = rows[selectedRef.current] ?? rows[0];
         if (item) {
           e.preventDefault();
-          copyItemRef.current(item);
+          pasteItemRef.current(item);
         }
       } else if (e.key === "Delete" && !typing) {
         // Delete key only, never Backspace — hijacking Backspace while
@@ -297,6 +298,22 @@ function App() {
   copyItemRef.current = copyItem;
   const removeItemRef = useRef(removeItem);
   removeItemRef.current = removeItem;
+
+  // PR2: Enter pastes into the previous app instead of copying. Text only —
+  // images keep the copy path (multi-flavor image paste is its own lane).
+  const pasteItem = useCallback(
+    (item: ClipboardItem) => {
+      if (item.kind === "image") {
+        copyItem(item);
+        return;
+      }
+      moveToTop(item);
+      api.pasteTextToPreviousApp(item.content).catch(console.error);
+    },
+    [copyItem, moveToTop],
+  );
+  const pasteItemRef = useRef(pasteItem);
+  pasteItemRef.current = pasteItem;
 
   return (
     <main className="flex h-screen min-w-0 flex-col gap-2 overflow-hidden bg-background p-2 text-foreground antialiased">
