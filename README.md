@@ -106,8 +106,14 @@ Next candidates: full keyboard control (arrows + Enter + Del) ·
 Enter-to-paste directly into the previous app · password/OTP hygiene
 (skip secrets or auto-expire them).
 
-Later ideas: cloud sync · rich-text/HTML clipboard (capture + paste formatted
-flavors, not just plain text) · file drops · plugin system · OCR for images.
+In review (PRs #1–#6): keyboard control (#1, merge first) ·
+paste backend via enigo (#2 draft — Enter wiring lands after #1 merges) ·
+password/OTP hygiene with 60s TTL fallback (#3) · rich-text/HTML clipboard
+with sanitized preview (#4, needs a small rebase after #1) · Explorer file
+drops with sizes + open (#5) · local WinRT OCR extraction (#6).
+
+Later ideas: cloud sync · plugin system (both parked — need architecture
+calls before code).
 
 ## License
 
