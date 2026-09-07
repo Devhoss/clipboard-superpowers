@@ -3,6 +3,7 @@ pub mod clipboard;
 pub mod commands;
 pub mod db;
 pub mod richtext;
+pub mod ocr;
 pub mod settings;
 
 use std::sync::{Arc, Mutex};
@@ -180,9 +181,11 @@ pub fn run() {
             commands::toggle_pin,
             commands::copy_to_clipboard,
             commands::copy_image_to_clipboard,
+<<<<<<< HEAD
             commands::copy_rich_to_clipboard,
             commands::paste_text_to_previous_app,
             commands::file_meta,
+            commands::ocr_image,
             commands::read_image_base64,
             commands::get_settings,
             commands::update_settings,

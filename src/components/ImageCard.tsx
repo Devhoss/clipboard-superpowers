@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { CardAction } from "@/components/CardShared";
 import { CategoryLabel } from "@/components/CategoryFilter";
 import { formatTime } from "@/lib/format";
+import { api } from "@/lib/api";
 import { getCachedImage } from "@/lib/imageCache";
 import type { ClipboardItem } from "@/lib/types";
-import { Copy, Pin, PinOff, Trash2 } from "lucide-react";
+import { Copy, Loader2, Pin, PinOff, ScanText, Trash2 } from "lucide-react";
 
 export function ImageCard({
   item,
@@ -19,6 +20,20 @@ export function ImageCard({
 }) {
   const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  // PR6: extraction runs in the backend; the new text item arrives through
+  // the live new-item event, so this card only tracks busy/error.
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [ocrError, setOcrError] = useState<string | null>(null);
+
+  const extract = () => {
+    if (ocrBusy) return;
+    setOcrBusy(true);
+    setOcrError(null);
+    api
+      .ocrImage(item.content)
+      .catch((e: unknown) => setOcrError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setOcrBusy(false));
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -58,6 +73,9 @@ export function ImageCard({
         <div className="flex items-center gap-0.5">
           <span className="mr-1 text-[10px] text-muted-foreground">{formatTime(item.created_at)}</span>
           <CardAction label="Copy image" onClick={onCopy}><Copy /></CardAction>
+          <CardAction label="Extract text" onClick={extract}>
+            {ocrBusy ? <Loader2 className="animate-spin" /> : <ScanText />}
+          </CardAction>
           <CardAction label={item.pinned ? "Unpin image" : "Pin image"} onClick={onPin}>
             {item.pinned ? <PinOff /> : <Pin />}
           </CardAction>
@@ -85,6 +103,14 @@ export function ImageCard({
           <span className="text-xs text-muted-foreground">loading…</span>
         )}
       </div>
+      {ocrBusy && (
+        <div className="mt-2 text-[11px] text-muted-foreground">Reading text…</div>
+      )}
+      {ocrError && (
+        <div className="mt-2 truncate text-[11px] text-destructive" title={ocrError}>
+          Couldn&apos;t read text: {ocrError}
+        </div>
+      )}
     </div>
   );
 }
