@@ -9,7 +9,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::categorize::{categorize, hash_content};
 use crate::db::{insert_item, open_db, ClipboardItem};
-use crate::richtext::sanitize_fragment;
+use crate::richtext::{parse_cf_html, sanitize_fragment};
 use crate::settings::Settings;
 
 pub const POLL_INTERVAL_MS: u64 = 300;
@@ -284,6 +284,16 @@ fn capture_and_store(
     }
 }
 
+/// Get the usable fragment out of whatever `formats::Html` handed us.
+/// Pure (no clipboard access) so it can be unit-tested against captured
+/// real-world bytes. See `read_html_for_text` for why both shapes exist.
+fn extract_fragment(raw: &[u8]) -> Option<String> {
+    if let Some(frag) = parse_cf_html(raw) {
+        return Some(frag);
+    }
+    std::str::from_utf8(raw).ok().map(str::to_string)
+}
+
 /// Read the `HTML Format` flavor for `expected` text (PR4).
 /// Returns the sanitized fragment, or None when the clipboard holds no HTML,
 /// the text moved on mid-read, or the fragment is empty/oversized.
@@ -303,12 +313,14 @@ fn read_html_for_text(expected: &str) -> Option<String> {
     if formats::Html::new()?.read_clipboard(&mut raw).is_err() {
         return None;
     }
-    // NOTE: clipboard-win's get_html already slices out the fragment using
-    // the header offsets — `raw` is the bare fragment, NOT a full CF_HTML
-    // document. Parsing it again always fails (found live: real Chrome
-    // bytes rejected). parse_cf_html/build_cf_html remain the write path.
-    let fragment = std::str::from_utf8(&raw).ok()?;
-    let clean = sanitize_fragment(fragment);
+    // clipboard-win is inconsistent here (proven live): sometimes `raw` is a
+    // full CF_HTML document with the Version:/StartFragment: header, sometimes
+    // the already-sliced bare fragment. Try the document parse first — it
+    // validates offsets — and fall back to the raw bytes as a fragment.
+    // Parsing unconditionally broke real Chrome copies; storing unconditionally
+    // banks header garbage (seen live: "Version:0.9 StartHTML:..." in the DB).
+    let fragment = extract_fragment(&raw)?;
+    let clean = sanitize_fragment(&fragment);
     if clean.trim().is_empty() || clean.len() > MAX_HTML_CHARS {
         return None;
     }
@@ -350,5 +362,20 @@ mod tests {
         assert!(!deleted_matches(&entries, "xyz", 7));
         // Empty registry matches nothing.
         assert!(!deleted_matches(&[], "abc", 7));
+    }
+
+    #[test]
+    fn extract_fragment_handles_full_document_and_bare_fragment() {
+        use crate::richtext::build_cf_html;
+        // Shape 1 (seen live): full CF_HTML document with header.
+        let doc = build_cf_html("<b>hi</b>");
+        assert_eq!(extract_fragment(doc.as_bytes()).as_deref(), Some("<b>hi</b>"));
+        // Shape 2 (seen live): already-sliced bare fragment, no header.
+        assert_eq!(
+            extract_fragment(b"<h1>x</h1>").as_deref(),
+            Some("<h1>x</h1>")
+        );
+        // Garbage in: None (caller stores nothing).
+        assert_eq!(extract_fragment(b"\xff\xfe binary").as_deref(), None);
     }
 }
