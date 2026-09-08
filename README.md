@@ -98,19 +98,14 @@ src-tauri/capabilities/default.json  # explicit perms: autostart, global-shortcu
 ## Roadmap
 
 Shipped: global hotkey (re-mappable in Settings) · settings surface (hotkey,
-capture toggles, history cap, autostart, hide-on-blur, clear, stats) · search
-· auto-categories · pins · image capture · tray + autostart · light/dark/system
-themes · optimistic instant copy · re-copy bumps to top.
-
-Next candidates: full keyboard control (arrows + Enter + Del) ·
+capture toggles incl. files + secret-skip, history cap, autostart,
+hide-on-blur, clear, stats) · search · auto-categories · pins · image
+capture · tray + autostart · light/dark/system themes · optimistic instant
+copy · re-copy bumps to top · full keyboard control (arrows + Enter + Del) ·
 Enter-to-paste directly into the previous app · password/OTP hygiene
-(skip secrets or auto-expire them).
-
-In review (PRs #1–#6): keyboard control (#1, merge first) ·
-paste backend via enigo (#2 draft — Enter wiring lands after #1 merges) ·
-password/OTP hygiene with 60s TTL fallback (#3) · rich-text/HTML clipboard
-with sanitized preview (#4, needs a small rebase after #1) · Explorer file
-drops with sizes + open (#5) · local WinRT OCR extraction (#6).
+(skip secrets or auto-expire them after 60s) · rich-text/HTML clipboard
+with sanitized preview · Explorer file drops with sizes + open/reveal ·
+local WinRT OCR extraction (zero dependencies, on-device only).
 
 Dropped by design review: cloud sync (fights local-only guarantees, duplicates
 OS vendors, needs accounts + E2EE + a forever server) · plugin system
