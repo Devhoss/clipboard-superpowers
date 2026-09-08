@@ -1,10 +1,12 @@
 import { useEffect, useRef } from "react";
 import { ClipboardCard } from "./ClipboardCard";
 import { ImageCard } from "./ImageCard";
+import { FileCard } from "./FileCard";
 import type { ClipboardItem } from "@/lib/types";
 
 // Presentational list (PR1). Card actions live in App so mouse and keyboard
 // share one path — this component only renders, highlights, and scrolls.
+// PR5 adds the file branch; actions stay lifted.
 export function HistoryList({
   items,
   selectedIndex,
@@ -54,6 +56,13 @@ export function HistoryList({
           >
             {item.kind === "image" ? (
               <ImageCard
+                item={item}
+                onCopy={() => onCopy(item)}
+                onPin={() => onPin(item)}
+                onDelete={() => onDelete(item)}
+              />
+            ) : item.kind === "file" ? (
+              <FileCard
                 item={item}
                 onCopy={() => onCopy(item)}
                 onPin={() => onPin(item)}

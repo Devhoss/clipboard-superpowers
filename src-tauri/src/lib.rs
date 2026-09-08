@@ -182,6 +182,7 @@ pub fn run() {
             commands::copy_image_to_clipboard,
             commands::copy_rich_to_clipboard,
             commands::paste_text_to_previous_app,
+            commands::file_meta,
             commands::read_image_base64,
             commands::get_settings,
             commands::update_settings,

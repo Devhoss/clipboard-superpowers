@@ -199,6 +199,12 @@ export function SettingsPanel({
           label="Skip passwords & OTPs"
           hint="Off keeps them 60 seconds, then auto-deletes"
         />
+        <Toggle
+          checked={draft.capture_files}
+          onChange={(v) => setDraft((d) => ({ ...d, capture_files: v }))}
+          label="Capture files"
+          hint="Explorer copies become file cards"
+        />
       </Section>
 
       <Section title="History">

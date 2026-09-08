@@ -1,5 +1,5 @@
-export type Category = "plain" | "link" | "code" | "color" | "email" | "image" | "secret";
-export type Kind = "text" | "image";
+export type Category = "plain" | "link" | "code" | "color" | "email" | "image" | "secret" | "file";
+export type Kind = "text" | "image" | "file";
 
 export interface ClipboardItem {
   id: number;
@@ -13,7 +13,7 @@ export interface ClipboardItem {
   html: string | null;
 }
 
-export const CATEGORIES: Category[] = ["plain", "link", "code", "color", "email", "image", "secret"];
+export const CATEGORIES: Category[] = ["plain", "link", "code", "color", "email", "image", "secret", "file"];
 
 export interface AppSettings {
   hotkey: string;
@@ -23,10 +23,19 @@ export interface AppSettings {
   capture_images: boolean;
   hide_on_blur: boolean;
   skip_secrets: boolean;
+  capture_files: boolean;
 }
 
 export interface HistoryStats {
   total: number;
   pinned: number;
   db_bytes: number;
+}
+
+export interface FileMeta {
+  total_bytes: number;
+  existing: number;
+  /** Folders among existing (their stub sizes are excluded from total). */
+  dirs: number;
+  missing: string[];
 }

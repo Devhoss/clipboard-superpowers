@@ -30,3 +30,12 @@ export function richPreviewHtml(html: string | null, max = 2000): string | null 
   if (cut.replace(/<[^>]*>/g, "").trim().length === 0) return null;
   return cut;
 }
+
+/** Human byte counts for file cards: 512 → "512 B", 2048 → "2 KB". */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const v = bytes / 1024 ** i;
+  return `${Number.isInteger(v) ? v : v.toFixed(1)} ${units[i]}`;
+}

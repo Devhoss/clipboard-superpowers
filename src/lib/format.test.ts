@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { extractColor, formatTime, richPreviewHtml } from "./format";
+import { extractColor, formatBytes, formatTime, richPreviewHtml } from "./format";
 
 describe("format", () => {
   it("extracts hex colors", () => {
@@ -39,5 +39,13 @@ describe("format", () => {
     expect(richPreviewHtml("<ul></ul>")).toBeNull();
     const shells = `<ul style="${"x".repeat(2500)}">`;
     expect(richPreviewHtml(shells, 2000)).toBeNull();
+  });
+
+  it("formats byte counts", () => {
+    expect(formatBytes(0)).toBe("0 B");
+    expect(formatBytes(512)).toBe("512 B");
+    expect(formatBytes(2048)).toBe("2 KB");
+    expect(formatBytes(12_582_912)).toBe("12 MB");
+    expect(formatBytes(3_221_225_472)).toBe("3 GB");
   });
 });
