@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { SearchBar } from "./components/SearchBar";
 import { CategoryFilter } from "./components/CategoryFilter";
 import { HistoryList } from "./components/HistoryList";
@@ -301,10 +302,21 @@ function App() {
 
   // PR2: Enter pastes into the previous app instead of copying. Text only —
   // images keep the copy path (multi-flavor image paste is its own lane).
+  // PR5: Enter on a file card opens instead (single opens, multi reveals) —
+  // pasting paths stays on click/Copy. Opening touches neither clipboard
+  // nor history.
   const pasteItem = useCallback(
     (item: ClipboardItem) => {
       if (item.kind === "image") {
         copyItem(item);
+        return;
+      }
+      if (item.kind === "file") {
+        const paths = item.content.split("\n").filter(Boolean);
+        if (paths.length === 0) return;
+        const p =
+          paths.length === 1 ? openPath(paths[0]) : revealItemInDir(paths[0]);
+        p.catch(console.error);
         return;
       }
       moveToTop(item);
