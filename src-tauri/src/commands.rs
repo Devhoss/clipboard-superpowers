@@ -256,6 +256,46 @@ fn stat_paths(paths: &[String]) -> FileMeta {
     FileMeta { total_bytes, existing, dirs, missing }
 }
 
+/// Extract printed text from one of our image cards (PR6). Guarded to the
+/// images dir like `read_image_base64`. The text is inserted as a normal
+/// history item (categorized + searchable); the source image is untouched
+/// and the clipboard is left alone — extraction never destroys state.
+#[tauri::command]
+pub fn ocr_image(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    path: String,
+) -> Result<String, String> {
+    let resolved = std::path::Path::new(&path);
+    if resolved.parent() != Some(&state.images_dir) {
+        return Err("path outside images directory".into());
+    }
+    let text = crate::ocr::ocr_image_file(&path)?;
+    if text.trim().is_empty() {
+        return Err("no text found in image".into());
+    }
+    let max_items = state.settings.lock().unwrap().max_items;
+    let conn = db::open_db(&state.db_path.to_string_lossy()).map_err(|e| e.to_string())?;
+    let item = ClipboardItem {
+        id: 0,
+        content_hash: crate::categorize::hash_content(text.as_bytes()),
+        category: crate::categorize::categorize(&text).to_string(),
+        content: text.clone(),
+        kind: "text".into(),
+        pinned: false,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        html: None,
+    };
+    match db::insert_item(&conn, &item, max_items).map_err(|e| e.to_string())? {
+        db::InsertOutcome { id, .. } => {
+            let mut emitted = item;
+            emitted.id = id;
+            let _ = app.emit("clipboard:new-item", &emitted);
+        }
+    }
+    Ok(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

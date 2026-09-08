@@ -19,6 +19,9 @@ export const api = {
     invoke("paste_text_to_previous_app", { text }),
   readImageBase64: (path: string): Promise<string> =>
     invoke("read_image_base64", { path }),
+  // PR6: local OCR on one of our image cards. Returns the extracted text;
+  // the new text item arrives separately through the live event.
+  ocrImage: (path: string): Promise<string> => invoke("ocr_image", { path }),
   getSettings: (): Promise<AppSettings> => invoke("get_settings"),
   updateSettings: (settings: AppSettings): Promise<AppSettings> =>
     invoke("update_settings", { settings }),
