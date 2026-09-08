@@ -35,5 +35,7 @@ export interface HistoryStats {
 export interface FileMeta {
   total_bytes: number;
   existing: number;
+  /** Folders among existing (their stub sizes are excluded from total). */
+  dirs: number;
   missing: string[];
 }

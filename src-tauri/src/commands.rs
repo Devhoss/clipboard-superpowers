@@ -219,8 +219,13 @@ pub fn copy_image_to_clipboard(
 /// Stat-only — never reads file contents, never follows the open.
 #[derive(serde::Serialize)]
 pub struct FileMeta {
+    /// Sum of FILE sizes only. Directory entries report a stub size (4 KiB
+    /// on Windows) that is not content — counting it showed "4 KB" per
+    /// folder (seen live). Directories are counted in `dirs` instead;
+    /// recursive sizing is deliberately out of scope (unbounded on big trees).
     pub total_bytes: u64,
     pub existing: usize,
+    pub dirs: usize,
     pub missing: Vec<String>,
 }
 
@@ -232,18 +237,23 @@ pub fn file_meta(paths: Vec<String>) -> FileMeta {
 fn stat_paths(paths: &[String]) -> FileMeta {
     let mut total_bytes = 0u64;
     let mut existing = 0usize;
+    let mut dirs = 0usize;
     let mut missing = Vec::new();
     // Defensive cap mirrors the capture-side truncate.
     for p in paths.iter().take(500) {
         match std::fs::metadata(p) {
             Ok(m) => {
                 existing += 1;
-                total_bytes += m.len();
+                if m.is_dir() {
+                    dirs += 1;
+                } else {
+                    total_bytes += m.len();
+                }
             }
             Err(_) => missing.push(p.clone()),
         }
     }
-    FileMeta { total_bytes, existing, missing }
+    FileMeta { total_bytes, existing, dirs, missing }
 }
 
 #[cfg(test)]
@@ -268,7 +278,22 @@ mod tests {
         ]);
         assert_eq!(meta.total_bytes, 300);
         assert_eq!(meta.existing, 2);
+        assert_eq!(meta.dirs, 0);
         assert_eq!(meta.missing, vec![gone]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stat_paths_excludes_directory_stub_sizes() {
+        // Live: three Explorer folders showed "12 KB" (4 KiB stub each).
+        let dir = std::env::temp_dir().join("clipboard-superpowers-pr5-dirs");
+        let _ = std::fs::remove_dir_all(&dir);
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let meta = stat_paths(&[sub.to_string_lossy().to_string()]);
+        assert_eq!(meta.existing, 1);
+        assert_eq!(meta.dirs, 1);
+        assert_eq!(meta.total_bytes, 0, "dir stub size must not count");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

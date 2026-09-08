@@ -27,7 +27,13 @@ export function FileCard({
   onDelete: () => void;
 }) {
   const paths = item.content.split("\n").filter(Boolean);
-  const [meta, setMeta] = useState<{ total: string; missing: number; gone: boolean } | null>(null);
+  const [meta, setMeta] = useState<{
+    total: string;
+    missing: number;
+    gone: boolean;
+    dirs: number;
+    files: number;
+  } | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -38,6 +44,8 @@ export function FileCard({
           total: formatBytes(m.total_bytes),
           missing: m.missing.length,
           gone: m.existing === 0,
+          dirs: m.dirs,
+          files: m.existing - m.dirs,
         });
       })
       .catch(() => {
@@ -101,13 +109,21 @@ export function FileCard({
         )}
       </div>
       <div className="mt-1.5 pl-5 text-[11px] text-muted-foreground">
+        {/* Folder stub sizes never reach the total (backend excludes them):
+            all-folders shows no size, mixed shows file bytes + folder count. */}
         {meta === null ? (
           `${paths.length} file${paths.length === 1 ? "" : "s"}…`
         ) : meta.gone ? (
           <span className="text-destructive/90">Moved or deleted</span>
+        ) : meta.dirs > 0 && meta.files === 0 ? (
+          <>
+            {paths.length} folder{paths.length === 1 ? "" : "s"}
+            {meta.missing > 0 && ` · ${meta.missing} missing`}
+          </>
         ) : (
           <>
             {paths.length} file{paths.length === 1 ? "" : "s"} · {meta.total}
+            {meta.dirs > 0 && ` · ${meta.dirs} folder${meta.dirs === 1 ? "" : "s"}`}
             {meta.missing > 0 && ` · ${meta.missing} missing`}
           </>
         )}
