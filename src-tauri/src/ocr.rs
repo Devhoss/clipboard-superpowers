@@ -26,11 +26,37 @@ use std::future::IntoFuture;
 pub fn ocr_image_file(path: &str) -> Result<String, String> {
     let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
     let ours = hr == S_OK; // S_FALSE = someone else initialized: don't uninit theirs
+    let t0 = std::time::Instant::now();
     let result = ocr_inner(path).map_err(|e| e.to_string());
+    let ms = t0.elapsed().as_millis();
     if ours {
         unsafe { CoUninitialize() };
     }
-    result.map(|t| t.trim().to_string())
+    result.map(|t| {
+        let text = t.trim().to_string();
+        let words = text.split_whitespace().count();
+        let rss = peak_rss_mb()
+            .map(|mb| format!(", peak RSS {mb:.0} MB"))
+            .unwrap_or_default();
+        eprintln!("clipboard-superpowers: ocr done in {ms}ms, {words} words{rss}");
+        text
+    })
+}
+
+/// Peak working set of this process, for spike measurements. None when the
+/// query itself fails — logging must never break extraction.
+fn peak_rss_mb() -> Option<f64> {
+    use windows::Win32::System::{ProcessStatus::*, Threading::GetCurrentProcess};
+    unsafe {
+        let mut pmc = PROCESS_MEMORY_COUNTERS_EX::default();
+        GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            &mut pmc as *mut _ as *mut PROCESS_MEMORY_COUNTERS,
+            std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+        )
+        .ok()?;
+        Some(pmc.PeakWorkingSetSize as f64 / 1024.0 / 1024.0)
+    }
 }
 
 fn ocr_inner(path: &str) -> windows::core::Result<String> {

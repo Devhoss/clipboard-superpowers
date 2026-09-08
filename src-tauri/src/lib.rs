@@ -181,7 +181,6 @@ pub fn run() {
             commands::toggle_pin,
             commands::copy_to_clipboard,
             commands::copy_image_to_clipboard,
-<<<<<<< HEAD
             commands::copy_rich_to_clipboard,
             commands::paste_text_to_previous_app,
             commands::file_meta,
