@@ -370,6 +370,7 @@ fn capture_and_store(
                 kind: "file".into(),
                 pinned: false,
                 created_at: Utc::now().to_rfc3339(),
+                html: None,
             };
             store_and_emit(app, state, conn, item, hash);
         }

@@ -9,7 +9,6 @@ export function extractColor(content: string): string | null {
   return m ? m[1] : null;
 }
 
-<<<<<<< HEAD
 /**
  * Trim a sanitized HTML fragment for card preview. Cuts at a tag boundary —
  * never mid-tag: a half-open `<ul style="...` makes the WebView swallow the

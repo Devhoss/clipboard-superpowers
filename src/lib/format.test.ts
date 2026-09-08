@@ -22,7 +22,6 @@ describe("format", () => {
     expect(formatTime("2026-01-01T12:00:00Z")).toMatch(/\d/);
   });
 
-<<<<<<< HEAD
   it("passes short fragments through", () => {
     expect(richPreviewHtml("<h1>Hi</h1>")).toBe("<h1>Hi</h1>");
     expect(richPreviewHtml(null)).toBeNull();
@@ -48,6 +47,5 @@ describe("format", () => {
     expect(formatBytes(2048)).toBe("2 KB");
     expect(formatBytes(12_582_912)).toBe("12 MB");
     expect(formatBytes(3_221_225_472)).toBe("3 GB");
->>>>>>> 3f3cc63 (feat: file drops from Explorer as file cards)
   });
 });
