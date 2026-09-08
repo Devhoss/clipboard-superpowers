@@ -112,8 +112,10 @@ password/OTP hygiene with 60s TTL fallback (#3) · rich-text/HTML clipboard
 with sanitized preview (#4, needs a small rebase after #1) · Explorer file
 drops with sizes + open (#5) · local WinRT OCR extraction (#6).
 
-Later ideas: cloud sync · plugin system (both parked — need architecture
-calls before code).
+Dropped by design review: cloud sync (fights local-only guarantees, duplicates
+OS vendors, needs accounts + E2EE + a forever server) · plugin system
+(multiplier with nothing to multiply yet; custom-actions-lite is the
+fallback if real extensibility demand appears).
 
 ## License
 
