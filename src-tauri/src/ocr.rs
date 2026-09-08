@@ -86,14 +86,38 @@ fn ocr_inner(path: &str) -> windows::core::Result<String> {
     let mut out = String::new();
     for line in result.Lines()? {
         let text = line.Text()?.to_string();
-        if !text.trim().is_empty() {
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str(text.trim());
+        let trimmed = text.trim();
+        // WinRT reads rule/marker art (───, ^^^, ███) as repeated letters
+        // ("AAAAAAAAA"). Those lines carry no content — drop them at the
+        // source instead of banking garbage (seen live on terminal shots).
+        if trimmed.is_empty() || is_decoration_line(trimmed) {
+            continue;
         }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(trimmed);
     }
     Ok(out)
+}
+
+/// True when a line is (almost) one character repeated: separators, marker
+/// art, OCR hallucinations of them. Pure so it can be unit-tested.
+fn is_decoration_line(line: &str) -> bool {
+    // Short lines are never filtered — "aaa" could be real content.
+    if line.chars().count() < 6 {
+        return false;
+    }
+    let mut counts = std::collections::HashMap::new();
+    let mut total = 0usize;
+    for c in line.chars().filter(|c| !c.is_whitespace()) {
+        *counts.entry(c).or_insert(0usize) += 1;
+        total += 1;
+    }
+    if total == 0 {
+        return true;
+    }
+    counts.values().any(|&n| n * 10 > total * 6)
 }
 
 #[cfg(test)]
@@ -106,5 +130,17 @@ mod tests {
         // with an OCR language pack, verified manually (see PR body).
         let err = ocr_image_file("E:\\definitely\\not\\here\\x.png").unwrap_err();
         assert!(err.contains("not found"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn decoration_lines_filtered_but_prose_kept() {
+        // Live WinRT hallucination on terminal rule art.
+        assert!(is_decoration_line("AAAAAAAAA"));
+        assert!(is_decoration_line("-----------------------------------"));
+        assert!(is_decoration_line("^^^^^^"));
+        assert!(!is_decoration_line("could not find Threading in System"));
+        assert!(!is_decoration_line("tray ready +50.5464ms"));
+        assert!(!is_decoration_line("aaa"), "short lines are never filtered");
+        assert!(!is_decoration_line("hello world"));
     }
 }
