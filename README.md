@@ -119,4 +119,4 @@ fallback if real extensibility demand appears).
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Copyright (c) 2026 Hoss (Operation Winter).
+MIT — see [LICENSE](LICENSE). Copyright (c) 2026 Hoss.
