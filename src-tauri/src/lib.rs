@@ -102,11 +102,16 @@ pub fn run() {
                 .join("settings.json");
             let settings = Settings::load(&settings_path);
             eprintln!("clipboard-superpowers: dirs+settings +{:?}", t0.elapsed());
+            // One shared connection for all commands (see DbConn). A failure
+            // here is fatal — every command would fail anyway.
+            let conn = db::open_db(&db_path.to_string_lossy())
+                .expect("failed to open clipboard db");
             let state = clipboard::AppState {
                 db_path,
                 images_dir,
                 settings_path,
                 settings: Arc::new(Mutex::new(settings.clone())),
+                conn: Arc::new(Mutex::new(conn)),
                 last_hash: Arc::new(Mutex::new(None)),
                 deleted: Arc::new(Mutex::new(Vec::new())),
             };
@@ -179,10 +184,11 @@ pub fn run() {
             commands::search_history,
             commands::delete_item,
             commands::toggle_pin,
+            commands::get_history_item,
             commands::copy_to_clipboard,
+            commands::copy_history_item,
             commands::copy_image_to_clipboard,
-            commands::copy_rich_to_clipboard,
-            commands::paste_text_to_previous_app,
+            commands::paste_history_item,
             commands::file_meta,
             commands::ocr_image,
             commands::read_image_base64,

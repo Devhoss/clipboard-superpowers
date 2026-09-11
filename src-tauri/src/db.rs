@@ -11,6 +11,9 @@ pub struct ClipboardItem {
     pub pinned: bool,
     pub created_at: String, // RFC3339
     pub html: Option<String>, // sanitized HTML flavor (PR4), None = plain text
+    /// Friendly name of the app that wrote the clip (detail pane). None for
+    /// rows captured before this existed or when the owner was unavailable.
+    pub source_app: Option<String>,
 }
 
 #[derive(Debug)]
@@ -44,7 +47,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
             category TEXT NOT NULL,
             kind TEXT NOT NULL,
             pinned INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            source_app TEXT
         )",
         [],
     )?;
@@ -56,6 +60,14 @@ fn init_schema(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_category ON clipboard_history(category)",
         [],
     )?;
+    // source_app migration: friendly name of the copying app. Guarded like
+    // the html migration below — pre-existing databases migrate in place.
+    let has_source: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('clipboard_history') WHERE name = 'source_app'")?
+        .exists([])?;
+    if !has_source {
+        conn.execute("ALTER TABLE clipboard_history ADD COLUMN source_app TEXT", [])?;
+    }
     // PR4 migration: formatted-HTML flavor alongside plain text. Guarded so
     // existing databases (created before this column) migrate in place —
     // ADD COLUMN on a table that already has it is an error, hence the check.
@@ -79,13 +91,17 @@ pub fn insert_item(conn: &Connection, item: &ClipboardItem, max_items: i64) -> R
         )
         .optional()?;
     conn.execute(
-        "INSERT INTO clipboard_history (content, content_hash, category, kind, pinned, created_at, html)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "INSERT INTO clipboard_history (content, content_hash, category, kind, pinned, created_at, html, source_app)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(content_hash) DO UPDATE SET
            created_at = excluded.created_at,
+           -- Re-capture re-categorizes: category rules evolve (e.g. the rgb()
+           -- anchoring fix), and a stale row keeps its wrong tab forever if
+           -- the bump doesn't rewrite it. Pinned is never written here at all
+           -- (only toggle_pin changes it) so bumps can't unpin.
+           category = excluded.category,
            -- A re-capture with a failed flavor read (None) must not erase
-           -- known formatting; pinned is never written here at all (only
-           -- toggle_pin changes it) so bumps can't unpin.
+           -- known formatting.
            html = COALESCE(excluded.html, clipboard_history.html)",
         params![
             item.content,
@@ -94,7 +110,8 @@ pub fn insert_item(conn: &Connection, item: &ClipboardItem, max_items: i64) -> R
             item.kind,
             item.pinned as i32,
             item.created_at,
-            item.html
+            item.html,
+            item.source_app
         ],
     )?;
     // last_insert_rowid() is unreliable after ON CONFLICT DO UPDATE —
@@ -132,7 +149,8 @@ pub fn expire_secrets(conn: &Connection, cutoff: &str) -> Result<usize> {
     Ok(removed)
 }
 
-const ITEM_COLUMNS: &str = "id, content, content_hash, category, kind, pinned, created_at, html";
+const ITEM_COLUMNS: &str =
+    "id, content, content_hash, category, kind, pinned, created_at, html, source_app";
 
 fn row_to_item(row: &rusqlite::Row) -> Result<ClipboardItem> {
     Ok(ClipboardItem {
@@ -144,6 +162,7 @@ fn row_to_item(row: &rusqlite::Row) -> Result<ClipboardItem> {
         pinned: row.get::<_, i32>(5)? != 0,
         created_at: row.get(6)?,
         html: row.get(7)?,
+        source_app: row.get(8)?,
     })
 }
 
@@ -154,6 +173,50 @@ pub fn get_all_items(conn: &Connection, limit: i64) -> Result<Vec<ClipboardItem>
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![limit], row_to_item)?;
     rows.collect()
+}
+
+/// Preview rows for list/search responses. Text clips carry a 300-char
+/// content slice and a 2400-char html slice — far beyond what the 3-line
+/// card preview and `richPreviewHtml` (2000) need; the measured payload of
+/// a full 1000-row read was 7.3 MB of JSON vs 0.26 MB here. Full text/html
+/// lives only in the DB; copy/paste loads the complete row on demand via
+/// [`get_item_by_id`]. File rows keep full content (path lists must reach
+/// FileCard and copy-back intact); image rows carry a path either way.
+pub fn get_history_previews(conn: &Connection, limit: i64) -> Result<Vec<ClipboardItem>> {
+    let sql = "SELECT id,
+                 CASE WHEN kind = 'text' THEN substr(content, 1, 300) ELSE content END,
+                 content_hash, category, kind, pinned, created_at,
+                 CASE WHEN kind = 'text' THEN substr(html, 1, 2400) ELSE html END, source_app
+               FROM clipboard_history ORDER BY pinned DESC, created_at DESC LIMIT ?1";
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params![limit], row_to_item)?;
+    rows.collect()
+}
+
+/// Like [`get_history_previews`] but filtered by LIKE query (escaped here).
+pub fn search_history_previews(
+    conn: &Connection,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<ClipboardItem>> {
+    let escaped = query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    let pattern = format!("%{escaped}%");
+    let sql = "SELECT id,
+                 CASE WHEN kind = 'text' THEN substr(content, 1, 300) ELSE content END,
+                 content_hash, category, kind, pinned, created_at,
+                 CASE WHEN kind = 'text' THEN substr(html, 1, 2400) ELSE html END, source_app
+               FROM clipboard_history
+               WHERE content LIKE ?1 ESCAPE '\\' ORDER BY pinned DESC, created_at DESC LIMIT ?2";
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params![pattern, limit], row_to_item)?;
+    rows.collect()
+}
+
+/// Full row by id — the on-demand loader behind copy/paste of preview rows.
+pub fn get_item_by_id(conn: &Connection, id: i64) -> Result<Option<ClipboardItem>> {
+    let sql = format!("SELECT {ITEM_COLUMNS} FROM clipboard_history WHERE id = ?1");
+    let mut stmt = conn.prepare(&sql)?;
+    stmt.query_row(params![id], row_to_item).optional()
 }
 
 pub fn search_items(conn: &Connection, query: &str, limit: i64) -> Result<Vec<ClipboardItem>> {
@@ -221,6 +284,7 @@ mod tests {
             pinned: false,
             created_at: created_at.into(),
             html: None,
+            source_app: None,
         }
     }
 
@@ -246,6 +310,95 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].content, "dup", "bumped item must sort to top");
         assert_eq!(items[0].created_at, "2026-01-03T00:00:00Z");
+    }
+
+    #[test]
+    fn previews_truncate_text_but_keep_files_full() {
+        let conn = open_in_memory_db().unwrap();
+        let big = "x".repeat(10_000);
+        let mut rich = item(&big, "2026-01-01T00:00:00Z");
+        rich.html = Some("<b>y</b>".repeat(4_000));
+        insert_item(&conn, &rich, 1000).unwrap();
+        let paths = (0..100).map(|i| format!("C:\\dir\\file{i}.txt")).collect::<Vec<_>>().join("\n");
+        let mut file_item = item(&paths, "2026-01-02T00:00:00Z");
+        file_item.kind = "file".into();
+        file_item.category = "file".into();
+        insert_item(&conn, &file_item, 1000).unwrap();
+
+        let previews = get_history_previews(&conn, 100).unwrap();
+        assert_eq!(previews.len(), 2);
+        let text = previews.iter().find(|i| i.kind == "text").unwrap();
+        assert_eq!(text.content.len(), 300, "text content must be capped");
+        assert_eq!(text.html.as_ref().unwrap().len(), 2400, "html must be capped");
+        let file = previews.iter().find(|i| i.kind == "file").unwrap();
+        assert_eq!(file.content, paths, "file path lists must not be truncated");
+
+        // Search previews truncate the same way.
+        let hits = search_history_previews(&conn, "xxxx", 200).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].content.len(), 300);
+
+        // And the full row is still recoverable by id for copy/paste.
+        let full = get_item_by_id(&conn, text.id).unwrap().unwrap();
+        assert_eq!(full.content, big);
+        assert_eq!(full.html.unwrap().len(), "<b>y</b>".len() * 4_000);
+        assert!(get_item_by_id(&conn, 999_999).unwrap().is_none());
+    }
+
+    #[test]
+    fn migration_adds_source_app_column_to_preexisting_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        // A table created before source_app existed (PR3-era schema).
+        conn.execute(
+            "CREATE TABLE clipboard_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT NOT NULL,
+                content_hash TEXT NOT NULL UNIQUE,
+                category TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )",
+            [],
+        )
+        .unwrap();
+        init_schema(&conn).unwrap();
+        let has: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('clipboard_history') WHERE name = 'source_app'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(has);
+    }
+
+    #[test]
+    fn source_app_round_trips_and_survives_bump() {
+        let conn = open_in_memory_db().unwrap();
+        let mut app_clip = item(&"just text".repeat(1), "2026-01-01T00:00:00Z");
+        app_clip.source_app = Some("VS Code".into());
+        insert_item(&conn, &app_clip, 1000).unwrap();
+        // Re-copy from elsewhere (html None) must keep the original app.
+        let mut again = item("just text", "2026-01-02T00:00:00Z");
+        again.source_app = None;
+        insert_item(&conn, &again, 1000).unwrap();
+        let row = get_by_hash(&conn, "hash-just text").unwrap().unwrap();
+        assert_eq!(row.source_app.as_deref(), Some("VS Code"));
+    }
+
+    #[test]
+    fn bump_recategorizes_stale_rows() {
+        // Category rules evolve; a re-copy of the same content must refresh
+        // the category instead of keeping the stale (wrong) one forever.
+        let conn = open_in_memory_db().unwrap();
+        let mut stale = item("mislabeled", "2026-01-01T00:00:00Z");
+        stale.category = "color".into();
+        insert_item(&conn, &stale, 1000).unwrap();
+        let mut fresh = item("mislabeled", "2026-01-02T00:00:00Z");
+        fresh.category = "code".into();
+        insert_item(&conn, &fresh, 1000).unwrap();
+        let items = get_all_items(&conn, 1000).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].category, "code");
     }
 
     #[test]

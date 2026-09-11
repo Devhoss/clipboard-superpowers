@@ -12,14 +12,15 @@ fn with_conn<T>(
     state: &State<'_, AppState>,
     f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T>,
 ) -> Result<T, String> {
-    let conn = db::open_db(&state.db_path.to_string_lossy()).map_err(|e| e.to_string())?;
+    // Shared long-lived connection (see DbConn) — no per-command open/init.
+    let conn = state.conn.lock().unwrap();
     f(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn get_history(state: State<'_, AppState>) -> Result<Vec<ClipboardItem>, String> {
     let limit = state.settings.lock().unwrap().max_items;
-    with_conn(&state, |conn| db::get_all_items(conn, limit))
+    with_conn(&state, |conn| db::get_history_previews(conn, limit))
 }
 
 #[tauri::command]
@@ -28,9 +29,9 @@ pub fn search_history(state: State<'_, AppState>, query: String) -> Result<Vec<C
     let limit = state.settings.lock().unwrap().max_items;
     with_conn(&state, |conn| {
         if query.is_empty() {
-            db::get_all_items(conn, limit)
+            db::get_history_previews(conn, limit)
         } else {
-            db::search_items(conn, &query, 200)
+            db::search_history_previews(conn, &query, 200)
         }
     })
 }
@@ -70,24 +71,40 @@ pub fn toggle_pin(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     with_conn(&state, |conn| db::toggle_pin(conn, id))
 }
 
+/// Full row by id. List/search payloads carry 300-char content previews, so
+/// the detail pane loads the complete row here when the selection changes.
 #[tauri::command]
-pub fn copy_to_clipboard(
-    state: State<'_, AppState>,
-    app: AppHandle,
-    text: String,
+pub fn get_history_item(state: State<'_, AppState>, id: i64) -> Result<Option<ClipboardItem>, String> {
+    with_conn(&state, |conn| db::get_item_by_id(conn, id))
+}
+
+/// Copy text (plus optional sanitized HTML flavor) to the OS clipboard, then
+/// bump the matching history row so the card jumps to the top immediately.
+/// Shared tail of the by-text and by-id copy commands.
+fn copy_text_with_flavors(
+    state: &State<'_, AppState>,
+    app: &AppHandle,
+    text: &str,
+    html: Option<&str>,
 ) -> Result<(), String> {
     let hash = crate::categorize::hash_content(text.as_bytes());
     // Gated + retried: without this a click landing mid-poll-read fails
     // with Windows 1418. Cloned per attempt since retry may run it again.
-    write_with_retry(|cb| cb.set_text(text.clone()))?;
-    // Re-copy = most recent: bump the row so the card jumps to the top
-    // immediately instead of waiting for the next poll tick.
-    let conn = db::open_db(&state.db_path.to_string_lossy()).map_err(|e| e.to_string())?;
+    write_with_retry(|cb| cb.set_text(text.to_string()))?;
+    // HTML second, under the process gate. A failed flavor write still
+    // leaves the text flavor in place — degrade to plain, don't fail.
+    if let Some(html) = html {
+        if let Err(e) = write_html_flavor(&crate::richtext::build_cf_html(html)) {
+            eprintln!("clipboard-superpowers: HTML flavor write failed ({e}), text kept");
+        }
+    }
+    // Re-copy = most recent: bump the row.
+    let conn = state.conn.lock().unwrap();
     let now = chrono::Utc::now().to_rfc3339();
     match db::touch_by_hash(&conn, &hash, &now).map_err(|e| e.to_string())? {
         Some(row) => {
             // Suppress only our own write (time-bound); the bump is done.
-            suppress_hash(&state, &hash);
+            suppress_hash(state, &hash);
             let _ = app.emit("clipboard:new-item", &row);
         }
         // Not in history — leave last_hash alone so the poller inserts it
@@ -97,36 +114,63 @@ pub fn copy_to_clipboard(
     Ok(())
 }
 
-/// Copy text AND its sanitized HTML flavor back to the clipboard (PR4).
-/// Word/Notion/Discord read the HTML flavor and keep formatting; Notepad
-/// reads the text flavor and degrades gracefully. Same bump + suppress +
-/// emit tail as `copy_to_clipboard` (mirrors the `copy_image_to_clipboard`
-/// precedent — one shared shape, not a refactor of unrelated commands).
 #[tauri::command]
-pub fn copy_rich_to_clipboard(
+pub fn copy_to_clipboard(
     state: State<'_, AppState>,
     app: AppHandle,
     text: String,
-    html: String,
 ) -> Result<(), String> {
-    let hash = crate::categorize::hash_content(text.as_bytes());
-    write_with_retry(|cb| cb.set_text(text.clone()))?;
-    // HTML second, under the process gate: without it a poll tick can wedge
-    // on 1418 mid-write. A failed flavor write still leaves the text flavor
-    // in place — degrade to plain, don't fail the whole copy.
-    if let Err(e) = write_html_flavor(&crate::richtext::build_cf_html(&html)) {
-        eprintln!("clipboard-superpowers: HTML flavor write failed ({e}), text kept");
-    }
-    let conn = db::open_db(&state.db_path.to_string_lossy()).map_err(|e| e.to_string())?;
-    let now = chrono::Utc::now().to_rfc3339();
-    match db::touch_by_hash(&conn, &hash, &now).map_err(|e| e.to_string())? {
-        Some(row) => {
-            suppress_hash(&state, &hash);
-            let _ = app.emit("clipboard:new-item", &row);
+    copy_text_with_flavors(&state, &app, &text, None)
+}
+
+/// Copy a history row by id (text/rich/file). The list payload carries only
+/// 300-char content previews, so the webview can no longer be trusted to
+/// hold full text — the backend loads the complete row itself.
+/// Image cards go through `copy_image_to_clipboard` instead.
+#[tauri::command]
+pub fn copy_history_item(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    id: i64,
+) -> Result<(), String> {
+    let (text, html) = {
+        let conn = state.conn.lock().unwrap();
+        match db::get_item_by_id(&conn, id).map_err(|e| e.to_string())? {
+            Some(row) if row.kind != "image" => (row.content, row.html),
+            Some(_) => return Err("image cards must use copy_image_to_clipboard".into()),
+            None => return Err(format!("no history item with id {id}")),
         }
-        None => {}
+    };
+    copy_text_with_flavors(&state, &app, &text, html.as_deref())
+}
+
+/// Copy-then-paste into the previously focused app (PR2), by history id —
+/// same as `copy_history_item` but for text rows, then synthesizes Ctrl+V.
+///
+/// The 150ms sleep blocks this command's worker thread briefly; that is
+/// deliberate — the keys must not fire before the OS restores focus.
+/// Failures are returned, never swallowed: a failed key-sim means the text
+/// is still on the clipboard (copy succeeded), so the user can Ctrl+V by hand.
+#[tauri::command]
+pub fn paste_history_item(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    id: i64,
+) -> Result<(), String> {
+    let (text, html) = {
+        let conn = state.conn.lock().unwrap();
+        match db::get_item_by_id(&conn, id).map_err(|e| e.to_string())? {
+            Some(row) if row.kind == "text" => (row.content, row.html),
+            Some(_) => return Err("only text rows support paste".into()),
+            None => return Err(format!("no history item with id {id}")),
+        }
+    };
+    copy_text_with_flavors(&state, &app, &text, html.as_deref())?;
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.hide();
     }
-    Ok(())
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    send_ctrl_v()
 }
 
 /// Write a full CF_HTML document to the `HTML Format` flavor.
@@ -139,30 +183,6 @@ fn write_html_flavor(doc: &str) -> Result<(), String> {
         .write_clipboard(&doc.to_string())
         .map_err(|e| e.to_string())?;
     Ok(())
-}
-
-/// Copy-then-paste into the previously focused app (PR2 backend slice).
-///
-/// Flow: reuse `copy_to_clipboard` (clipboard + bump + suppress + event),
-/// hide the popup so focus falls back to the previous app, wait a beat,
-/// then synthesize Ctrl+V. Text only — images/HTML stay copy-only.
-///
-/// The 150ms sleep blocks this command's worker thread briefly; that is
-/// deliberate — the keys must not fire before the OS restores focus.
-/// Failures are returned, never swallowed: a failed key-sim means the text
-/// is still on the clipboard (copy succeeded), so the user can Ctrl+V by hand.
-#[tauri::command]
-pub fn paste_text_to_previous_app(
-    state: State<'_, AppState>,
-    app: AppHandle,
-    text: String,
-) -> Result<(), String> {
-    copy_to_clipboard(state, app.clone(), text)?;
-    if let Some(win) = app.get_webview_window("main") {
-        let _ = win.hide();
-    }
-    std::thread::sleep(std::time::Duration::from_millis(150));
-    send_ctrl_v()
 }
 
 /// Raw SendInput Ctrl+V. OS-bound by nature: no automated test fires this
@@ -203,7 +223,7 @@ pub fn copy_image_to_clipboard(
             bytes: std::borrow::Cow::Owned(raw.clone()),
         })
     })?;
-    let conn = db::open_db(&state.db_path.to_string_lossy()).map_err(|e| e.to_string())?;
+    let conn = state.conn.lock().unwrap();
     let now = chrono::Utc::now().to_rfc3339();
     match db::touch_by_hash(&conn, &hash, &now).map_err(|e| e.to_string())? {
         Some(row) => {
@@ -274,8 +294,11 @@ pub fn ocr_image(
     if text.trim().is_empty() {
         return Err("no text found in image".into());
     }
-    let max_items = state.settings.lock().unwrap().max_items;
-    let conn = db::open_db(&state.db_path.to_string_lossy()).map_err(|e| e.to_string())?;
+    let (max_items, conn) = {
+        let max_items = state.settings.lock().unwrap().max_items;
+        let conn = state.conn.lock().unwrap();
+        (max_items, conn)
+    };
     let item = ClipboardItem {
         id: 0,
         content_hash: crate::categorize::hash_content(text.as_bytes()),
@@ -285,6 +308,7 @@ pub fn ocr_image(
         pinned: false,
         created_at: chrono::Utc::now().to_rfc3339(),
         html: None,
+        source_app: None,
     };
     match db::insert_item(&conn, &item, max_items).map_err(|e| e.to_string())? {
         db::InsertOutcome { id, .. } => {
@@ -362,6 +386,7 @@ pub fn update_settings(
 ) -> Result<Settings, String> {
     // Validate BEFORE persisting anything.
     parse_hotkey(&settings.hotkey)?;
+    parse_hotkey(&settings.actions_hotkey)?;
     let mut s = settings;
     s.max_items = s.max_items.clamp(100, 5000);
     s.save(&state.settings_path)?;

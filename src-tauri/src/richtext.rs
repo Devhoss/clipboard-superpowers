@@ -97,6 +97,30 @@ pub fn sanitize_fragment(html: &str) -> String {
         .to_string()
 }
 
+/// Heuristic: does this sanitized HTML fragment look like syntax-highlighted
+/// code copied from an IDE or docs site? VS Code / JetBrains / browsers wrap
+/// code in `<pre>` or a monospace `font-family`; chat and word-processor rich
+/// text has colors but almost never monospace. Pure so it can be unit-tested
+/// against captured fragments.
+pub fn looks_like_code_html(fragment: &str) -> bool {
+    let lower = fragment.to_lowercase();
+    if lower.contains("<pre") {
+        return true;
+    }
+    const MONO_FONTS: [&str; 9] = [
+        "monospace",
+        "consolas",
+        "courier",
+        "menlo",
+        "monaco",
+        "cascadia",
+        "fira code",
+        "jetbrains mono",
+        "source code pro",
+    ];
+    MONO_FONTS.iter().any(|f| lower.contains(f))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +169,24 @@ mod tests {
         assert!(!clean.contains("onclick"));
         assert!(clean.contains("https://x.com"));
         assert!(clean.contains("color:red"));
+    }
+
+    #[test]
+    fn detects_ide_code_fragments() {
+        let vscode = "<div style=\"color:#d4d4d4;background-color:#1e1e1e;font-family: Consolas, 'Courier New', monospace;white-space:pre;\"><span style=\"color:#569cd6\">const</span> x = 1;</div>";
+        assert!(looks_like_code_html(vscode));
+        assert!(looks_like_code_html("<pre><b>hi</b></pre>"));
+        assert!(looks_like_code_html("<div style=\"font-family: JetBrains Mono\">x</div>"));
+    }
+
+    #[test]
+    fn rejects_prose_rich_text_as_code() {
+        assert!(!looks_like_code_html(
+            "<span style=\"color:red\">hello world</span>"
+        ));
+        assert!(!looks_like_code_html("<b>Markets</b> rally"));
+        assert!(!looks_like_code_html(
+            "<ul><li style=\"font-family: Arial\">item</li></ul>"
+        ));
     }
 }

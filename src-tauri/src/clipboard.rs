@@ -109,12 +109,19 @@ pub fn write_with_retry<T>(
     Err(last)
 }
 
+/// One long-lived SQLite connection shared by all Tauri commands. Opening a
+/// connection + re-running init_schema cost ~7ms per command in the bench —
+/// every delete/pin/copy paid it. The poller keeps its own connection (WAL
+/// allows both); writes serialize at SQLite anyway.
+pub type DbConn = Arc<Mutex<rusqlite::Connection>>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub db_path: PathBuf,
     pub images_dir: PathBuf,
     pub settings_path: PathBuf,
     pub settings: Arc<Mutex<Settings>>,
+    pub conn: DbConn,
     pub last_hash: LastHash,
     /// (hash, clipboard-seq-at-delete) pairs. See `deleted_matches`.
     pub deleted: DeletedHashes,
@@ -154,6 +161,107 @@ pub fn image_hash(width: usize, height: usize, bytes: &[u8]) -> String {
     hash_content(&hashed)
 }
 
+/// Hash for an Explorer file drop. Deliberately NOT the plain text hash of
+/// the path list: copying a file card's paths AS TEXT would produce the same
+/// bytes, collide on content_hash, and the capture bump would convert the
+/// dir entry into a plain text entry (seen live: clicking `src` turned it
+/// into a path text card). The path-text copy is its own entry — that is the
+/// "two ways to copy a file" model, and the asymmetry with the text path is
+/// intentional (file copy-back goes through the text command on purpose).
+pub fn file_drop_hash(joined_paths: &str) -> String {
+    hash_content(format!("file-drop\0{joined_paths}").as_bytes())
+}
+
+/// Best-effort friendly name of the app that wrote the current clipboard
+/// contents (the Application row in the detail pane). Uses GetClipboardOwner
+/// — the window that last SET the clipboard — so there is no race with the
+/// user switching apps before the 300ms poll tick reads the copy. Elevated
+/// processes (OpenProcess denied) and ownerless clipboards degrade to None
+/// and the UI omits the row. Best-effort by design: never fails a capture.
+fn clipboard_owner_app() -> Option<String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::System::DataExchange::GetClipboardOwner;
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+    unsafe {
+        let hwnd = GetClipboardOwner().ok()?;
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return None;
+        }
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; 512];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        )
+        .is_ok();
+        let _ = CloseHandle(handle);
+        if !ok {
+            return None;
+        }
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        let exe = std::path::Path::new(&path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())?;
+        Some(pretty_app_name(&exe))
+    }
+}
+
+/// Exe stem → friendly name for the detail pane. Unknown apps fall back to
+/// the exe name with the first letter capitalized. UWP shells report odd
+/// hosts; map the common ones to something honest.
+fn pretty_app_name(exe: &str) -> String {
+    let known: &str = match exe.to_lowercase().as_str() {
+        "code" | "code - insiders" => "VS Code",
+        "chrome" => "Google Chrome",
+        "msedge" => "Microsoft Edge",
+        "firefox" => "Firefox",
+        "notepad" => "Notepad",
+        "notepad++" => "Notepad++",
+        "devenv" => "Visual Studio",
+        "windowsterminal" | "wt" => "Windows Terminal",
+        "cmd" => "Command Prompt",
+        "powershell" | "pwsh" => "PowerShell",
+        "explorer" => "File Explorer",
+        "snippingtool" | "screenclipping" | "snipaste" => "Snipping Tool",
+        "winword" => "Word",
+        "excel" => "Excel",
+        "powerpnt" => "PowerPoint",
+        "outlook" => "Outlook",
+        "idea64" | "idea" => "IntelliJ IDEA",
+        "pycharm64" => "PyCharm",
+        "webstorm64" => "WebStorm",
+        "sublime_text" => "Sublime Text",
+        "obsidian" => "Obsidian",
+        "slack" => "Slack",
+        "discord" => "Discord",
+        "telegram" => "Telegram",
+        "spotify" => "Spotify",
+        "figma" => "Figma",
+        "applicationframehost" | "runtimebroker" => "Windows app",
+        // Services share svchost.exe; "copied by a background service" is the
+        // truthful description (seen live: an agent running as a service).
+        "svchost" => "Windows service",
+        _ => {
+            let mut chars = exe.chars();
+            return match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => exe.to_string(),
+            };
+        }
+    };
+    known.into()
+}
+
 fn store_and_emit(
     app: &AppHandle,
     state: &AppState,
@@ -186,9 +294,23 @@ fn store_and_emit(
 
 /// Clipboard payload already pulled off the OS clipboard (gate released).
 enum Captured {
-    Text { text: String, hash: String },
-    Image { width: usize, height: usize, bytes: Vec<u8>, hash: String },
-    Files { paths: Vec<String>, hash: String },
+    Text {
+        text: String,
+        hash: String,
+        source_app: Option<String>,
+    },
+    Image {
+        width: usize,
+        height: usize,
+        bytes: Vec<u8>,
+        hash: String,
+        source_app: Option<String>,
+    },
+    Files {
+        paths: Vec<String>,
+        hash: String,
+        source_app: Option<String>,
+    },
 }
 
 /// Read phase: opens the clipboard, copies bytes out, releases the gate.
@@ -204,6 +326,10 @@ fn read_clipboard(state: &AppState) -> Option<Captured> {
         }
     };
 
+    // Owner of whatever is on the clipboard right now — read once, applied
+    // to whichever branch captures. Read inside the gate, right after the
+    // handle exists, so owner and content belong to the same write.
+    let owner_app = clipboard_owner_app();
     // NOTE: text wins when the clipboard holds both text and an image
     // (common when copying images from browsers). Documented v1 tradeoff —
     // image is only stored when get_text() fails.
@@ -226,7 +352,11 @@ fn read_clipboard(state: &AppState) -> Option<Captured> {
             if is_deleted(state, &hash) {
                 return None;
             }
-            return Some(Captured::Text { text, hash });
+            return Some(Captured::Text {
+                text,
+                hash,
+                source_app: owner_app,
+            });
         }
     }
     if want_images {
@@ -243,6 +373,7 @@ fn read_clipboard(state: &AppState) -> Option<Captured> {
                 height,
                 bytes: bytes.into_owned(),
                 hash,
+                source_app: owner_app,
             });
         }
     }
@@ -255,11 +386,15 @@ fn read_clipboard(state: &AppState) -> Option<Captured> {
     if want_files {
         if let Some(paths) = read_file_list() {
             let joined = paths.join("\n");
-            let hash = hash_content(joined.as_bytes());
+            let hash = file_drop_hash(&joined);
             if seen_recently(state, &hash) {
                 return None;
             }
-            return Some(Captured::Files { paths, hash });
+            return Some(Captured::Files {
+                paths,
+                hash,
+                source_app: owner_app,
+            });
         }
     }
     None
@@ -293,7 +428,7 @@ fn capture_and_store(
         return;
     };
     match captured {
-        Captured::Text { text, hash } => {
+        Captured::Text { text, hash, source_app } => {
             // Secret sweep runs every tick (PR3): one cheap DELETE keeps the
             // 60s TTL honest even when nothing new is captured.
             let cutoff = (Utc::now() - chrono::Duration::seconds(SECRET_TTL_SECS))
@@ -320,6 +455,7 @@ fn capture_and_store(
                     pinned: false,
                     created_at: Utc::now().to_rfc3339(),
                     html: None,
+                    source_app: None,
                 };
                 store_and_emit(app, state, conn, item, hash);
                 return;
@@ -329,7 +465,7 @@ fn capture_and_store(
             // The text is re-read and compared so a mid-read clipboard change
             // can't attach stale formatting to new text.
             let html = read_html_for_text(&text);
-            let category = categorize(&text).to_string();
+            let category = code_aware_category(&categorize(&text), &html);
             let item = ClipboardItem {
                 id: 0,
                 content: text,
@@ -339,10 +475,11 @@ fn capture_and_store(
                 pinned: false,
                 created_at: Utc::now().to_rfc3339(),
                 html,
+                source_app,
             };
             store_and_emit(app, state, conn, item, hash);
         }
-        Captured::Image { width, height, bytes, hash } => {
+        Captured::Image { width, height, bytes, hash, source_app } => {
             let Some(path) = save_image_png(&state.images_dir, &hash, width, height, &bytes) else {
                 return;
             };
@@ -355,10 +492,11 @@ fn capture_and_store(
                 pinned: false,
                 created_at: Utc::now().to_rfc3339(),
                 html: None,
+                source_app,
             };
             store_and_emit(app, state, conn, item, hash);
         }
-        Captured::Files { paths, hash } => {
+        Captured::Files { paths, hash, source_app } => {
             // content is the plain path list: clicking the card copies paths
             // as text through the existing copy path (same hash → bump, no
             // duplicate row). Sizes come lazily via file_meta (PR5).
@@ -371,10 +509,27 @@ fn capture_and_store(
                 pinned: false,
                 created_at: Utc::now().to_rfc3339(),
                 html: None,
+                source_app,
             };
             store_and_emit(app, state, conn, item, hash);
         }
     }
+}
+
+/// IDE HTML flavor outranks plain-text heuristics: a clip that `categorize`
+/// called plain but whose sanitized HTML is clearly syntax-highlighted code
+/// (`<pre>` / monospace, see `richtext::looks_like_code_html`) belongs in the
+/// Code tab. Only plain is overridden — the other categories are single-line
+/// or structural convictions that never coincide with a monospace flavor.
+fn code_aware_category(text_category: &str, html: &Option<String>) -> String {
+    if text_category == "plain"
+        && html
+            .as_deref()
+            .is_some_and(crate::richtext::looks_like_code_html)
+    {
+        return "code".into();
+    }
+    text_category.to_string()
 }
 
 /// Get the usable fragment out of whatever `formats::Html` handed us.
@@ -482,6 +637,27 @@ pub fn start_polling(app: AppHandle, state: AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ide_html_flavor_promotes_plain_to_code() {
+        let mono = Some("<div style=\"font-family: Consolas, monospace\">x = 1</div>".to_string());
+        assert_eq!(code_aware_category("plain", &mono), "code");
+        assert_eq!(code_aware_category("plain", &None), "plain");
+        assert_eq!(code_aware_category("code", &None), "code");
+        // Other convictions are never overridden by the flavor.
+        assert_eq!(code_aware_category("link", &mono), "link");
+        assert_eq!(code_aware_category("color", &mono), "color");
+    }
+
+    #[test]
+    fn file_drop_hash_differs_from_text_hash() {
+        let joined = "E:\\dev\\wavesurf\\src";
+        // The whole point of the tag: a dir drop and its path copied as text
+        // must be separate entries, never collide on content_hash.
+        assert_ne!(file_drop_hash(joined), hash_content(joined.as_bytes()));
+        assert_eq!(file_drop_hash(joined), file_drop_hash(joined));
+        assert_ne!(file_drop_hash("a\nb"), file_drop_hash("a"));
+    }
 
     #[test]
     fn deleted_matches_same_hash_and_seq_only() {

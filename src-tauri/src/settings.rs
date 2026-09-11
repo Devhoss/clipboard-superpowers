@@ -24,6 +24,11 @@ pub struct Settings {
     /// pattern as skip_secrets.
     #[serde(default = "default_true")]
     pub capture_files: bool,
+    /// In-app shortcut for the Actions menu (bottom-right chip). NOT a global
+    /// shortcut — the webview matches it against keydown events. Old settings
+    /// files lack this key — serde default keeps them loading.
+    #[serde(default = "default_actions_hotkey")]
+    pub actions_hotkey: String,
 }
 
 fn default_skip_secrets() -> bool {
@@ -32,6 +37,10 @@ fn default_skip_secrets() -> bool {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_actions_hotkey() -> String {
+    "Ctrl+K".into()
 }
 
 impl Default for Settings {
@@ -45,6 +54,7 @@ impl Default for Settings {
             hide_on_blur: true,
             skip_secrets: true,
             capture_files: true,
+            actions_hotkey: default_actions_hotkey(),
         }
     }
 }
@@ -75,6 +85,11 @@ impl Settings {
         self.max_items = self.max_items.clamp(100, 5000);
         if parse_hotkey(&self.hotkey).is_err() {
             self.hotkey = Settings::default().hotkey;
+        }
+        // Same shape as the global hotkey (modifier + key); it just isn't
+        // registered with the OS — the webview matches it on keydown.
+        if parse_hotkey(&self.actions_hotkey).is_err() {
+            self.actions_hotkey = default_actions_hotkey();
         }
     }
 }
@@ -215,6 +230,32 @@ mod tests {
         }"#;
         let s: Settings = serde_json::from_str(old).unwrap();
         assert!(s.capture_files);
+    }
+
+    #[test]
+    fn old_file_without_actions_hotkey_loads_as_default() {
+        // Settings written before the Actions menu have no actions_hotkey
+        // key; it must load with the default instead of failing parse.
+        let old = r#"{
+            "hotkey": "Ctrl+Alt+V",
+            "max_items": 1000,
+            "launch_on_login": true,
+            "capture_text": true,
+            "capture_images": true,
+            "hide_on_blur": true
+        }"#;
+        let s: Settings = serde_json::from_str(old).unwrap();
+        assert_eq!(s.actions_hotkey, "Ctrl+K");
+    }
+
+    #[test]
+    fn normalize_repairs_bad_actions_hotkey() {
+        let mut s = Settings {
+            actions_hotkey: "K".into(), // no modifier
+            ..Settings::default()
+        };
+        s.normalize();
+        assert_eq!(s.actions_hotkey, "Ctrl+K");
     }
 
     #[test]
