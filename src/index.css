@@ -202,3 +202,16 @@ html.dark .rich-preview * {
   color: inherit !important;
   background-color: transparent !important;
 }
+
+/* Code token colors for the detail-pane syntax highlighter (mock v2 palette:
+   one Dark+ inspired set for light, iOS-native accents for dark). */
+.tok-kw { color: #c678dd; }
+.tok-fn { color: #61afef; }
+.tok-str { color: #98c379; }
+.tok-num { color: #d19a66; }
+.tok-cm { color: #7f848e; font-style: italic; }
+html.dark .tok-kw { color: #bf5af2; }
+html.dark .tok-fn { color: #64a2ff; }
+html.dark .tok-str { color: #30d158; }
+html.dark .tok-num { color: #ff9f0a; }
+html.dark .tok-cm { color: #98989d; }

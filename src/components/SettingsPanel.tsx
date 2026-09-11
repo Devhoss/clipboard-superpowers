@@ -86,7 +86,8 @@ export function SettingsPanel({
   onCleared: () => void;
 }) {
   const [draft, setDraft] = useState<AppSettings>(initial);
-  const [recording, setRecording] = useState(false);
+  // Which shortcut the recorder is writing to, if any.
+  const [recording, setRecording] = useState<"hotkey" | "actions" | null>(null);
   const [stats, setStats] = useState<HistoryStats | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -107,8 +108,10 @@ export function SettingsPanel({
       e.stopPropagation();
       const combo = keyEventToCombo(e);
       if (!combo) return; // modifier-only or unsupported — keep listening
-      setDraft((d) => ({ ...d, hotkey: combo }));
-      setRecording(false);
+      setDraft((d) =>
+        recording === "actions" ? { ...d, actions_hotkey: combo } : { ...d, hotkey: combo },
+      );
+      setRecording(null);
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
@@ -150,22 +153,42 @@ export function SettingsPanel({
       <Section title="Popup">
         <button
           type="button"
-          onClick={() => setRecording(true)}
+          onClick={() => setRecording("hotkey")}
           className="flex w-full items-center justify-between gap-3 py-1.5 text-left"
         >
           <span className="min-w-0">
             <span className="block text-[13px] text-foreground">Toggle hotkey</span>
             <span className="block text-[11px] text-muted-foreground">
-              {recording ? "Press keys now…" : "Click to record a new combo"}
+              {recording === "hotkey" ? "Press keys now…" : "Click to record a new combo"}
             </span>
           </span>
           <kbd
             className={cn(
               "shrink-0 rounded-md border border-border bg-muted px-2 py-1 font-mono text-[11px] text-foreground",
-              recording && "animate-pulse border-primary",
+              recording === "hotkey" && "animate-pulse border-primary",
             )}
           >
             {draft.hotkey}
+          </kbd>
+        </button>
+        <button
+          type="button"
+          onClick={() => setRecording("actions")}
+          className="flex w-full items-center justify-between gap-3 py-1.5 text-left"
+        >
+          <span className="min-w-0">
+            <span className="block text-[13px] text-foreground">Actions menu shortcut</span>
+            <span className="block text-[11px] text-muted-foreground">
+              {recording === "actions" ? "Press keys now…" : "Inside the popup only"}
+            </span>
+          </span>
+          <kbd
+            className={cn(
+              "shrink-0 rounded-md border border-border bg-muted px-2 py-1 font-mono text-[11px] text-foreground",
+              recording === "actions" && "animate-pulse border-primary",
+            )}
+          >
+            {draft.actions_hotkey}
           </kbd>
         </button>
         <Toggle

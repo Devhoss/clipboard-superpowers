@@ -4,9 +4,33 @@ export function formatTime(rfc3339: string): string {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+/** "Today" / "Yesterday" / short date — sidebar group headers + info rows. */
+export function dayLabel(rfc3339: string): string {
+  const d = new Date(rfc3339);
+  if (Number.isNaN(d.getTime())) return "";
+  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((startOfDay(new Date()) - startOfDay(d)) / 86_400_000);
+  if (days <= 0) return "Today";
+  if (days === 1) return "Yesterday";
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
 export function extractColor(content: string): string | null {
   const m = content.trim().match(/^(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\))$/);
   return m ? m[1] : null;
+}
+
+/**
+ * Truncate text for card preview. Backs off one code unit when the cut lands
+ * inside a UTF-16 surrogate pair — a split pair renders as a broken `�`
+ * glyph (the "weird icon" on long clips).
+ */
+export function truncateText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const last = text.charCodeAt(max - 1);
+  // High surrogate at the cut means its low surrogate got cut off.
+  const cut = last >= 0xd800 && last <= 0xdbff ? max - 1 : max;
+  return text.slice(0, cut) + "…";
 }
 
 /**
@@ -23,6 +47,8 @@ export function richPreviewHtml(html: string | null, max = 2000): string | null 
   if (cut.length > max) {
     const end = cut.lastIndexOf(">", max);
     if (end < 0) return null;
+    // The cut lands right after an ASCII '>', so it can never split a
+    // surrogate pair — no extra back-off needed here (unlike truncateText).
     cut = cut.slice(0, end + 1);
   }
   // Unclosed elements auto-close on innerHTML parse — only a total lack of

@@ -7,16 +7,21 @@ export const api = {
     invoke("search_history", { query }),
   deleteItem: (id: number): Promise<void> => invoke("delete_item", { id }),
   togglePin: (id: number): Promise<void> => invoke("toggle_pin", { id }),
+  // Full row (list payloads carry 300-char content previews) — the detail
+  // pane loads this when the selection changes.
+  getHistoryItem: (id: number): Promise<ClipboardItem | null> =>
+    invoke("get_history_item", { id }),
   copyToClipboard: (text: string): Promise<void> =>
     invoke("copy_to_clipboard", { text }),
+  // Copy a history row by id: the backend loads the full text/html itself —
+  // list payloads carry only 300-char previews (multi-MB savings).
+  copyHistoryItem: (id: number): Promise<void> =>
+    invoke("copy_history_item", { id }),
   copyImageToClipboard: (path: string): Promise<void> =>
     invoke("copy_image_to_clipboard", { path }),
-  // PR4: text + sanitized HTML flavor. Falls back to plain copy when html is null.
-  copyRichToClipboard: (text: string, html: string): Promise<void> =>
-    invoke("copy_rich_to_clipboard", { text, html }),
-  // PR2: copy-then-paste into the previous app.
-  pasteTextToPreviousApp: (text: string): Promise<void> =>
-    invoke("paste_text_to_previous_app", { text }),
+  // PR2: copy-then-paste into the previous app, by history id.
+  pasteHistoryItem: (id: number): Promise<void> =>
+    invoke("paste_history_item", { id }),
   readImageBase64: (path: string): Promise<string> =>
     invoke("read_image_base64", { path }),
   // PR6: local OCR on one of our image cards. Returns the extracted text;

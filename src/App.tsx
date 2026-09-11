@@ -2,16 +2,28 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { SearchBar } from "./components/SearchBar";
-import { CategoryFilter } from "./components/CategoryFilter";
-import { HistoryList } from "./components/HistoryList";
+import { DetailPane } from "./components/DetailPane";
+import { EntryList } from "./components/EntryList";
 import { SettingsPanel } from "./components/SettingsPanel";
-import { ThemeSwitcher, type ThemeMode } from "./components/ThemeSwitcher";
+import { TypeDropdown } from "./components/TypeDropdown";
 import { api, EVENTS } from "./lib/api";
-import { clampSelection, moveSelection } from "./lib/keyboardNav";
+import { matchesCombo, moveSelection } from "./lib/keyboardNav";
 import { evictCachedImage } from "@/lib/imageCache";
-import type { AppSettings, ClipboardItem } from "./lib/types";
-import { ArrowLeft, Settings as SettingsIcon } from "lucide-react";
+import type { AppSettings, Category, ClipboardItem, ThemeMode } from "./lib/types";
+import {
+  ArrowLeft,
+  Clipboard as ClipboardIcon,
+  Copy,
+  Keyboard,
+  Laptop,
+  Moon,
+  Search as SearchIcon,
+  Settings as SettingsIcon,
+  Sun,
+  X,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 // Keep the renderer usable while it is being previewed in a regular browser.
 // Tauri injects this bridge before the app loads, but it is intentionally absent
@@ -46,24 +58,34 @@ function App() {
   const [items, setItems] = useState<ClipboardItem[]>([]);
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
-  const [category, setCategory] = useState("all");
+  const [category, setCategory] = useState<Category | "all">("all");
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const [visibleCount, setVisibleCount] = useState(50);
   const [view, setView] = useState<"list" | "settings">("list");
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  // Keyboard selection (PR1). Index into `visible` below, not the full list.
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [toast, setToast] = useState<string | null>(null);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  // Keyboard selection tracks the ITEM ID, not an index: a copy bumps the
+  // card to the top and reorders the list, and an index would silently point
+  // the detail pane at a different card. Missing ids fall back to the top row.
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   // Bumped on arrow-key moves so the list scrolls to follow the keyboard.
-  // Hover changes selectedIndex (highlight) without touching this.
   const [scrollKey, setScrollKey] = useState(0);
-  const selectedRef = useRef(0);
-  selectedRef.current = selectedIndex;
+  const selectedIdRef = useRef<number | null>(null);
+  selectedIdRef.current = selectedId;
   const viewRef = useRef(view);
   viewRef.current = view;
   const hideOnBlurRef = useRef(true);
+  const debouncedRef = useRef("");
+  debouncedRef.current = debounced;
+  const categoryRef = useRef<Category | "all">("all");
+  categoryRef.current = category;
+  const settingsRef = useRef<AppSettings | null>(null);
+  settingsRef.current = settings;
   const inputRef = useRef<HTMLInputElement>(null);
   const requestId = useRef(0);
   const themeWrapped = useRef(false);
+  const actionsRef = useRef<HTMLDivElement>(null);
 
   const fetchFor = useCallback((query: string) => {
     const id = ++requestId.current;
@@ -75,7 +97,7 @@ function App() {
       if (requestId.current === id) {
         setItems([...rows].sort(byPinnedThenRecent));
         setVisibleCount(50);
-        setSelectedIndex(0);
+        setSelectedId(null); // falls back to the top row
       }
     }).catch(console.error);
   }, []);
@@ -106,17 +128,23 @@ function App() {
   useEffect(() => {
     const unlisten = listen<ClipboardItem>(EVENTS.newItem, (e) => {
       const item = e.payload;
+      // A filtered view (search / type) must not have out-of-filter rows
+      // pushed in — otherwise any capture made while a search is active
+      // pops into the results and lingers there. Refetch and let the
+      // backend decide what matches.
+      if (debouncedRef.current.trim() || categoryRef.current !== "all") {
+        fetchFor(debouncedRef.current);
+        return;
+      }
       setItems((prev) => placeItem(prev, item));
     });
     return () => {
       unlisten.then((fn) => fn());
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // popup behavior: Esc hides, losing focus hides, gaining focus refocuses search.
-  // Hide is debounced + re-verified: the synthetic title-bar mousedown Tauri
-  // sends for drag-region dragging can fire a transient blur — hiding
-  // instantly would kill the window on the click that should start a drag.
   useEffect(() => {
     if (!appWindow) return;
     const win = appWindow;
@@ -124,41 +152,50 @@ function App() {
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        // In settings, Esc goes back first — only hides from the list.
+        const target = e.target as HTMLElement | null;
+        const inSearch = !!target && target.tagName === "INPUT" && target === inputRef.current;
         if (viewRef.current === "settings") {
           setView("list");
+        } else if (inSearch && search) {
+          setSearch("");
         } else {
           win.hide().catch(console.error);
         }
         return;
       }
-      // Keyboard nav (PR1): list view only — settings has its own inputs.
-      if (viewRef.current !== "list") return;
-      const rows = visibleRef.current;
-      if (rows.length === 0) return;
       const target = e.target as HTMLElement | null;
       const typing =
         !!target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA");
+      if (
+        matchesCombo(e, settingsRef.current?.actions_hotkey ?? "Ctrl+K") &&
+        !typing
+      ) {
+        if (viewRef.current !== "list") return;
+        e.preventDefault();
+        setActionsOpen((o) => !o);
+        return;
+      }
+      // Keyboard nav: list view only — settings has its own inputs.
+      if (viewRef.current !== "list") return;
+      const rows = visibleRef.current;
+      if (rows.length === 0) return;
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-        // Always steer selection, even from the search box (launcher
-        // behavior). Left/Right stay native for caret movement.
+        // Always steer selection, even from the search box (launcher behavior).
         e.preventDefault();
         const delta = e.key === "ArrowDown" ? 1 : -1;
-        setSelectedIndex((i) => moveSelection(i, delta, rows.length));
+        const cur = rows.findIndex((r) => r.id === selectedIdRef.current);
+        const next = moveSelection(cur < 0 ? 0 : cur, delta, rows.length);
+        setSelectedId(rows[next].id);
         setScrollKey((k) => k + 1);
       } else if (e.key === "Enter") {
-        // Enter pastes into the previous app (PR2); click stays copy-only.
-        // Enter is inert in a single-line search box, so firing from there
-        // is safe and useful.
-        const item = rows[selectedRef.current] ?? rows[0];
+        // Enter pastes into the previous app (PR2); the toolbar button copies.
+        const item = rows.find((r) => r.id === selectedIdRef.current) ?? rows[0];
         if (item) {
           e.preventDefault();
           pasteItemRef.current(item);
         }
       } else if (e.key === "Delete" && !typing) {
-        // Delete key only, never Backspace — hijacking Backspace while
-        // typing would eat search text instead of deleting cards.
-        const item = rows[selectedRef.current];
+        const item = rows.find((r) => r.id === selectedIdRef.current);
         if (item) {
           e.preventDefault();
           removeItemRef.current(item);
@@ -166,6 +203,10 @@ function App() {
       }
     };
     window.addEventListener("keydown", onKey);
+    const onOutsideClick = (e: MouseEvent) => {
+      if (!actionsRef.current?.contains(e.target as Node)) setActionsOpen(false);
+    };
+    document.addEventListener("click", onOutsideClick);
     const focusUnlisten = win.onFocusChanged(({ payload: focused }) => {
       if (hideTimer) {
         clearTimeout(hideTimer);
@@ -197,10 +238,12 @@ function App() {
     });
     return () => {
       window.removeEventListener("keydown", onKey);
+      document.removeEventListener("click", onOutsideClick);
       if (hideTimer) clearTimeout(hideTimer);
       focusUnlisten.then((fn) => fn());
     };
-  }, [fetchFor]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchFor, search]);
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -222,8 +265,6 @@ function App() {
       const isDark = document.documentElement.classList.contains("dark");
       document.documentElement.style.colorScheme = isDark ? "dark" : "light";
     } else if (doc.startViewTransition) {
-      // Smooth cross-fade via View Transitions (Chromium/WebView2). Falls
-      // back to an instant swap where unsupported — no staggered shimmer.
       doc.startViewTransition(() => apply(theme));
     } else {
       apply(theme);
@@ -243,68 +284,30 @@ function App() {
   const visible = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount]);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
+  const selectedItem =
+    visible.find((i) => i.id === selectedId) ?? visible[0] ?? null;
 
-  // Clamp selection when the list shrinks (filter narrows, item deleted).
-  useEffect(() => {
-    setSelectedIndex((i) => clampSelection(i, visibleRef.current.length));
-  }, [filtered.length, visibleCount]);
-
-  const handleCategory = useCallback((c: string) => {
-    setCategory(c);
-    setVisibleCount(50);
-    setSelectedIndex(0);
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    window.setTimeout(() => setToast((t) => (t === msg ? null : t)), 1300);
   }, []);
 
-  // Instant placement on card click (top of its pinned/unpinned group — never
-  // above pinned cards). The backend bump + live event follow within a tick
-  // and dedupe by id — the UI never waits for the round-trip.
-  const moveToTop = useCallback((item: ClipboardItem) => {
-    setItems((prev) => placeItem(prev, item));
-  }, []);
-
-  // Card actions, lifted here so mouse AND keyboard share one path (PR1).
-  // Same behavior as before the lift: optimistic updates, errors to console.
-  // PR4: formatted cards write both flavors (rich paste into Word, plain
-  // into Notepad). Plain cards keep the exact old path.
+  // Card actions. Copy goes by id (backend loads the full row); images keep
+  // the path-based command. The backend bump + live event move the card to
+  // the top — the UI never waits for the round-trip.
   const copyItem = useCallback(
     (item: ClipboardItem) => {
-      moveToTop(item);
       const p =
         item.kind === "image"
           ? api.copyImageToClipboard(item.content)
-          : item.html
-            ? api.copyRichToClipboard(item.content, item.html)
-            : api.copyToClipboard(item.content);
-      p.catch(console.error);
+          : item.kind === "file"
+            ? api.copyToClipboard(item.content) // path lists are never truncated
+            : api.copyHistoryItem(item.id);
+      p.then(() => showToast("Copied to clipboard")).catch(console.error);
     },
-    [moveToTop],
+    [showToast],
   );
-  const pinItem = useCallback(
-    (item: ClipboardItem) => {
-      api.togglePin(item.id).then(refresh).catch(console.error);
-    },
-    [refresh],
-  );
-  const removeItem = useCallback(
-    (item: ClipboardItem) => {
-      if (item.kind === "image") evictCachedImage(item.content);
-      api
-        .deleteItem(item.id)
-        .then(refresh)
-        .catch(console.error);
-    },
-    [refresh],
-  );
-  const copyItemRef = useRef(copyItem);
-  copyItemRef.current = copyItem;
-  const removeItemRef = useRef(removeItem);
-  removeItemRef.current = removeItem;
 
-  // PR2: Enter pastes into the previous app instead of copying. Text only —
-  // images keep the copy path (multi-flavor image paste is its own lane).
-  // PR5: Enter on a file card opens instead (single opens, multi reveals) —
-  // pasting paths stays on click/Copy. Opening touches neither clipboard
-  // nor history.
   const pasteItem = useCallback(
     (item: ClipboardItem) => {
       if (item.kind === "image") {
@@ -319,104 +322,300 @@ function App() {
         p.catch(console.error);
         return;
       }
-      moveToTop(item);
-      api.pasteTextToPreviousApp(item.content).catch(console.error);
+      api.pasteHistoryItem(item.id).catch(console.error);
     },
-    [copyItem, moveToTop],
+    [copyItem],
   );
+
+  // Links open in the browser; Explorer file rows open/reveal in Explorer.
+  const openUrlItem = useCallback(
+    (url: string) => {
+      openUrl(url)
+        .then(() => showToast("Opening link…"))
+        .catch(console.error);
+    },
+    [showToast],
+  );
+  const openPathItem = useCallback(
+    (path: string) => {
+      openPath(path)
+        .then(() => showToast("Opening…"))
+        .catch(console.error);
+    },
+    [showToast],
+  );
+  const openItem = useCallback(
+    (item: ClipboardItem) => {
+      if (item.category === "link") {
+        openUrlItem(item.content);
+      } else if (item.kind === "file") {
+        const paths = item.content.split("\n").filter(Boolean);
+        if (paths.length === 0) return;
+        // Single entry opens with its app; several reveal the first in Explorer.
+        const p =
+          paths.length === 1 ? openPath(paths[0]) : revealItemInDir(paths[0]);
+        p.then(() => showToast(paths.length === 1 ? "Opened" : "Revealed in Explorer")).catch(
+          console.error,
+        );
+      }
+    },
+    [openPathItem, openUrlItem, showToast],
+  );
+  // Single click only selects. Actions are explicit: double-click copies
+  // (paths as text for file rows), links/files open via the detail pane's
+  // Open button — accidental clicks must never fire the browser/Explorer.
+  const dblCopyItem = useCallback(
+    (item: ClipboardItem) => {
+      if (item.kind === "file") {
+        api
+          .copyToClipboard(item.content)
+          .then(() => showToast("Path copied"))
+          .catch(console.error);
+      } else {
+        copyItem(item);
+      }
+    },
+    [copyItem, showToast],
+  );
+
+  // Pin and delete update local state FIRST — the DB round trip is sub-
+  // millisecond but the follow-up list refetch re-reads the whole history;
+  // waiting for it made delete/pin feel seconds-slow. The background refetch
+  // reconciles; on error it also restores the truth from the backend.
+  const pinItem = useCallback(
+    (item: ClipboardItem) => {
+      setItems((prev) =>
+        [...prev.map((i) => (i.id === item.id ? { ...i, pinned: !i.pinned } : i))].sort(
+          byPinnedThenRecent,
+        ),
+      );
+      api.togglePin(item.id).then(refresh).catch((e) => {
+        console.error(e);
+        refresh();
+      });
+    },
+    [refresh],
+  );
+  const removeItem = useCallback(
+    (item: ClipboardItem) => {
+      if (item.kind === "image") evictCachedImage(item.content);
+      setItems((prev) => prev.filter((i) => i.id !== item.id));
+      api
+        .deleteItem(item.id)
+        .then(refresh)
+        .catch((e) => {
+          console.error(e);
+          refresh();
+        });
+    },
+    [refresh],
+  );
+  const copyItemRef = useRef(copyItem);
+  copyItemRef.current = copyItem;
+  const removeItemRef = useRef(removeItem);
+  removeItemRef.current = removeItem;
   const pasteItemRef = useRef(pasteItem);
   pasteItemRef.current = pasteItem;
 
+  const handleCategory = useCallback((c: Category | "all") => {
+    setCategory(c);
+    setVisibleCount(50);
+    setSelectedId(null);
+  }, []);
+
+  const appearance: { mode: ThemeMode; label: string; icon: typeof Sun }[] = [
+    { mode: "light", label: "Light", icon: Sun },
+    { mode: "system", label: "System", icon: Laptop },
+    { mode: "dark", label: "Dark", icon: Moon },
+  ];
+
   return (
-    <main className="flex h-screen min-w-0 flex-col gap-2 overflow-hidden bg-background p-2 text-foreground antialiased">
-      <div
-        data-tauri-drag-region
-        className="flex h-6 shrink-0 cursor-grab items-center justify-between active:cursor-grabbing select-none"
-      >
-        {view === "settings" ? (
+    <main className="flex h-screen min-w-0 flex-col overflow-hidden bg-background text-foreground antialiased">
+      {/* Dedicated grab strip: the top bar's interactive controls fill it,
+          so this margin is what makes the frameless window easy to drag. */}
+      <div data-tauri-drag-region aria-hidden="true" className="h-3 shrink-0" />
+      {view === "settings" ? (
+        <div
+          data-tauri-drag-region
+          className="flex h-11 shrink-0 items-center gap-2 border-b border-border/60 px-3"
+        >
           <button
             type="button"
-            onClick={() => setView("list")}
             aria-label="Back to history"
-            className="flex min-w-0 items-center gap-1.5 text-xs font-semibold text-foreground"
+            onClick={() => setView("list")}
+            className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
           >
-            <ArrowLeft className="size-3.5" />
-            <span>Settings</span>
+            <ArrowLeft className="size-4" />
           </button>
-        ) : (
-          <div className="flex min-w-0 items-center gap-2">
-            <span data-tauri-drag-region className="size-1.5 rounded-full bg-primary/80 shadow-[0_0_8px_color-mix(in_oklch,var(--primary),transparent_35%)]" />
-            <span data-tauri-drag-region className="text-xs font-semibold tracking-[-0.01em]">Clipboard</span>
-          </div>
-        )}
-        <div className="flex shrink-0 items-center gap-2">
-          <span className="text-[10px] text-muted-foreground">
-            {settings?.hotkey ?? "Ctrl+Alt+V"}
+          <span data-tauri-drag-region className="text-[13px] font-semibold">
+            Settings
           </span>
-          {view === "list" && (
-            <button
-              type="button"
-              onClick={() => setView("settings")}
-              aria-label="Open settings"
-              className="grid size-5 place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
-            >
-              <SettingsIcon className="size-3" strokeWidth={1.8} />
-            </button>
-          )}
-          <ThemeSwitcher value={theme} onChange={setTheme} />
         </div>
-      </div>
-      {view === "settings" ? (
-        settings ? (
-          <SettingsPanel
-            initial={settings}
-            onSaved={(s) => {
-              setSettings(s);
-              hideOnBlurRef.current = s.hide_on_blur;
-              refresh();
-            }}
-            onCleared={refresh}
-          />
-        ) : (
-          <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-            Loading settings…
-          </div>
-        )
       ) : (
-        <>
-          <div className="shrink-0 space-y-2">
-            <SearchBar value={search} onChange={setSearch} inputRef={inputRef} />
-            <CategoryFilter value={category} onChange={handleCategory} />
+        <div
+          data-tauri-drag-region
+          className="flex h-11 shrink-0 items-center gap-2.5 border-b border-border/60 px-3"
+        >
+          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg bg-muted/70 px-2.5 py-1.5 transition-shadow focus-within:bg-muted focus-within:shadow-[0_0_0_3px_rgba(10,132,255,0.15)]">
+            <SearchIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            <input
+              ref={inputRef}
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Type to filter entries…"
+              autoComplete="off"
+              className="min-w-0 flex-1 border-0 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
+            />
+            {search && (
+              <button
+                type="button"
+                aria-label="Clear search"
+                title="Clear"
+                onClick={() => {
+                  setSearch("");
+                  inputRef.current?.focus();
+                }}
+                className="grid size-4 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+              >
+                <X className="size-3" />
+              </button>
+            )}
           </div>
-          {filtered.length > 0 ? (
-            <>
-              <HistoryList
-                items={visible}
-                selectedIndex={selectedIndex}
-                scrollKey={scrollKey}
-                onCopy={copyItem}
-                onPin={pinItem}
-                onDelete={removeItem}
-                onHoverIndex={setSelectedIndex}
-              />
-              {visibleCount < filtered.length && (
-                <button
-                  type="button"
-                  onClick={() => setVisibleCount((n) => n + 50)}
-                  className="shrink-0 rounded-lg border border-border/70 bg-muted/60 px-3 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                >
-                  Show more ({filtered.length - visibleCount} remaining)
-                </button>
-              )}
-            </>
+          <TypeDropdown value={category} onChange={handleCategory} />
+        </div>
+      )}
+
+      {view === "settings" ? (
+        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+          {settings ? (
+            <SettingsPanel
+              initial={settings}
+              onSaved={(s) => {
+                setSettings(s);
+                hideOnBlurRef.current = s.hide_on_blur;
+                refresh();
+              }}
+              onCleared={refresh}
+            />
           ) : (
-            <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-              {search || category !== "all"
-                ? "No matches."
-                : "No clips yet — copy something!"}
+            <div className="grid h-full place-items-center text-sm text-muted-foreground">
+              Loading settings…
             </div>
           )}
-        </>
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1">
+          <EntryList
+            items={visible}
+            selectedId={selectedItem?.id ?? null}
+            scrollKey={scrollKey}
+            totalCount={filtered.length}
+            visibleCount={visibleCount}
+            onShowMore={() => setVisibleCount((n) => n + 50)}
+            onSelect={(id) => setSelectedId(id)}
+            onDblCopy={dblCopyItem}
+          />
+          <DetailPane
+            item={selectedItem}
+            onPin={pinItem}
+            onDelete={removeItem}
+            onOpen={openItem}
+            onOpenUrl={openUrlItem}
+            onOpenPath={openPathItem}
+          />
+        </div>
+      )}
+
+      {view === "list" && (
+        <div
+          data-tauri-drag-region
+          className="flex h-11 shrink-0 items-center gap-2.5 border-t border-border/60 px-3"
+        >
+          <div
+            data-tauri-drag-region
+            className="flex shrink-0 items-center gap-2 text-[12px] font-semibold"
+          >
+            <span
+              aria-hidden="true"
+              className="grid size-[22px] place-items-center rounded-md bg-gradient-to-br from-rose-400 to-rose-600 text-white shadow-[0_2px_6px_rgba(255,55,95,0.4)]"
+            >
+              <ClipboardIcon className="size-3" />
+            </span>
+            <span data-tauri-drag-region>Clipboard History</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => selectedItem && copyItem(selectedItem)}
+            disabled={!selectedItem}
+            className="mx-auto flex items-center gap-2 rounded-lg bg-foreground px-4 py-[7px] text-[12.5px] font-semibold text-background transition-all duration-150 hover:opacity-90 active:scale-[0.97] disabled:opacity-40"
+          >
+            <Copy className="size-3.5" />
+            Copy to Clipboard
+          </button>
+          <div ref={actionsRef} className="relative shrink-0">
+            <button
+              type="button"
+              onClick={() => setActionsOpen((o) => !o)}
+              className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <Keyboard className="size-3.5" />
+              Actions
+              {(settings?.actions_hotkey ?? "Ctrl+K")
+                .split("+")
+                .map((part) => (
+                  <kbd
+                    key={part}
+                    className="rounded border border-border/80 px-1 py-px font-sans text-[9.5px]"
+                  >
+                    {part.trim()}
+                  </kbd>
+                ))}
+            </button>
+            {actionsOpen && (
+              <div className="absolute bottom-[calc(100%+8px)] right-0 z-30 w-[170px] rounded-xl border border-border/80 bg-popover p-1 shadow-xl shadow-black/25">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionsOpen(false);
+                    setView("settings");
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] transition-colors hover:bg-foreground/5"
+                >
+                  <SettingsIcon className="size-3.5 text-muted-foreground" />
+                  Open Settings
+                </button>
+                <div className="mx-2 my-1 border-t border-border/50" />
+                <div className="flex items-center justify-between px-2 py-1">
+                  <span className="text-[11px] text-muted-foreground">Appearance</span>
+                  <div className="flex gap-0.5">
+                    {appearance.map(({ mode, label, icon: Icon }) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        aria-label={label}
+                        aria-pressed={theme === mode}
+                        onClick={() => setTheme(mode)}
+                        className={cn(
+                          "grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground",
+                          theme === mode && "bg-foreground/10 text-foreground",
+                        )}
+                      >
+                        <Icon className="size-3.5" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {toast && (
+        <div className="pointer-events-none fixed bottom-14 left-1/2 -translate-x-1/2 rounded-full bg-foreground px-3.5 py-[7px] text-[12px] font-medium text-background shadow-[0_8px_24px_rgba(0,0,0,0.25)]">
+          {toast}
+        </div>
       )}
     </main>
   );

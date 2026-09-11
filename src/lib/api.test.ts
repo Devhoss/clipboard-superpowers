@@ -37,6 +37,16 @@ describe("api", () => {
     expect(mockedInvoke).toHaveBeenCalledWith("copy_to_clipboard", { text: "hello" });
   });
 
+  it("passes id to copy_history_item", async () => {
+    await api.copyHistoryItem(42);
+    expect(mockedInvoke).toHaveBeenCalledWith("copy_history_item", { id: 42 });
+  });
+
+  it("passes id to paste_history_item", async () => {
+    await api.pasteHistoryItem(9);
+    expect(mockedInvoke).toHaveBeenCalledWith("paste_history_item", { id: 9 });
+  });
+
   it("passes path to read_image_base64", async () => {
     await api.readImageBase64("C:\\img\\a.png");
     expect(mockedInvoke).toHaveBeenCalledWith("read_image_base64", {
@@ -52,6 +62,7 @@ describe("api", () => {
   it("passes settings to update_settings", async () => {
     const s = {
       hotkey: "Ctrl+Alt+V",
+      actions_hotkey: "Ctrl+K",
       max_items: 500,
       launch_on_login: false,
       capture_text: true,

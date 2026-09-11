@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clampSelection, moveSelection } from "./keyboardNav";
+import { clampSelection, matchesCombo, moveSelection, parseCombo } from "./keyboardNav";
 
 describe("moveSelection", () => {
   it("moves down by delta", () => {
@@ -37,5 +37,27 @@ describe("clampSelection", () => {
 
   it("returns 0 for an empty list", () => {
     expect(clampSelection(2, 0)).toBe(0);
+  });
+});
+
+describe("parseCombo / matchesCombo", () => {
+  it("parses modifiers and maps keys to codes", () => {
+    expect(parseCombo("Ctrl+K")).toEqual({
+      ctrl: true, alt: false, shift: false, meta: false, code: "KeyK",
+    });
+    expect(parseCombo("Ctrl+Alt+7")!.code).toBe("Digit7");
+    expect(parseCombo("Alt+F9")!.code).toBe("F9");
+    expect(parseCombo("Ctrl+")).toBeNull();
+    expect(parseCombo("K")).toEqual({ ctrl: false, alt: false, shift: false, meta: false, code: "KeyK" });
+  });
+
+  it("matches real key events against the combo", () => {
+    const ev = (init: Partial<KeyboardEvent> & { code: string }) =>
+      ({ ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, ...init }) as KeyboardEvent;
+    expect(matchesCombo(ev({ code: "KeyK", ctrlKey: true }), "Ctrl+K")).toBe(true);
+    expect(matchesCombo(ev({ code: "KeyK" }), "Ctrl+K")).toBe(false);
+    expect(matchesCombo(ev({ code: "KeyK", ctrlKey: true, shiftKey: true }), "Ctrl+K")).toBe(false);
+    expect(matchesCombo(ev({ code: "Digit7", ctrlKey: true, altKey: true }), "Ctrl+Alt+7")).toBe(true);
+    expect(matchesCombo(ev({ code: "KeyK" }), "bogus")).toBe(false);
   });
 });

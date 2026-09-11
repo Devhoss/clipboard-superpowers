@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { extractColor, formatBytes, formatTime, richPreviewHtml } from "./format";
+import { dayLabel, extractColor, formatBytes, formatTime, richPreviewHtml, truncateText } from "./format";
 
 describe("format", () => {
   it("extracts hex colors", () => {
@@ -39,6 +39,27 @@ describe("format", () => {
     expect(richPreviewHtml("<ul></ul>")).toBeNull();
     const shells = `<ul style="${"x".repeat(2500)}">`;
     expect(richPreviewHtml(shells, 2000)).toBeNull();
+  });
+
+  it("labels day groups Today / Yesterday / date", () => {
+    const now = new Date();
+    const iso = (d: Date) => d.toISOString();
+    expect(dayLabel(iso(now))).toBe("Today");
+    const yesterday = new Date(now.getTime() - 24 * 3_600_000);
+    expect(dayLabel(iso(yesterday))).toBe("Yesterday");
+    expect(dayLabel("not-a-date")).toBe("");
+    // Far past renders as a short date (locale-dependent — just assert shape).
+    expect(dayLabel("2020-01-02T00:00:00Z")).not.toBe("Today");
+  });
+
+  it("truncates without splitting surrogate pairs", () => {
+    // "a" + 😀 (surrogate pair) cut at 2 would split the pair → broken glyph.
+    const emoji = "a\u{1F600}b";
+    expect(truncateText(emoji, 2)).toBe("a…");
+    expect(truncateText(emoji, 3)).toBe("a\u{1F600}…");
+    expect(truncateText(emoji, 99)).toBe(emoji);
+    // Plain ASCII passes through unchanged.
+    expect(truncateText("hello", 3)).toBe("hel…");
   });
 
   it("formats byte counts", () => {
