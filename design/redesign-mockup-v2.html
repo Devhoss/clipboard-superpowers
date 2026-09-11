@@ -1,0 +1,685 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clipboard Superpowers — Redesign v2 (Master–Detail)</title>
+<style>
+  /* ============ design tokens (shared DNA with v1) ======================= */
+  :root {
+    --bg:            #ececf0;
+    --surface:       rgba(245,245,248,.86);
+    --panel:         #ffffff;
+    --panel-2:       #f5f5f8;
+    --text:          #1d1d1f;
+    --text-2:        #86868b;
+    --hairline:      rgba(0,0,0,.07);
+    --hairline-strong: rgba(0,0,0,.12);
+    --fill:          rgba(120,120,128,.10);
+    --fill-2:        rgba(120,120,128,.16);
+    --sel:           rgba(120,120,128,.14);
+    --accent:        #0a84ff;
+    --accent-soft:   rgba(10,132,255,.12);
+    --danger:        #ff3b30;
+    --radius-win:    20px;
+    --shadow-win:    0 32px 80px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.10);
+    --spring:        cubic-bezier(.2,.9,.25,1);
+    --dot-plain:#98989d; --dot-link:#0a84ff; --dot-code:#bf5af2; --dot-color:#ff375f;
+    --dot-email:#ff9f0a; --dot-image:#30d158; --dot-secret:#ff453a; --dot-file:#64d2ff;
+    --stage:         #f2f2f6;
+  }
+  .dark {
+    --bg:            #0c0c0e;
+    --surface:       rgba(26,26,29,.88);
+    --panel:         #1a1a1d;
+    --panel-2:       #202024;
+    --text:          #f5f5f7;
+    --text-2:        #98989d;
+    --hairline:      rgba(255,255,255,.07);
+    --hairline-strong: rgba(255,255,255,.14);
+    --fill:          rgba(120,120,128,.16);
+    --fill-2:        rgba(120,120,128,.24);
+    --sel:           rgba(120,120,128,.22);
+    --accent-soft:   rgba(10,132,255,.20);
+    --shadow-win:    0 40px 100px rgba(0,0,0,.75), 0 2px 8px rgba(0,0,0,.5);
+    --stage:         #141417;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", Roboto, sans-serif;
+    background:
+      radial-gradient(1200px 700px at 20% -10%, #d7d7e2 0%, transparent 60%),
+      radial-gradient(1000px 800px at 110% 110%, #cfd8e6 0%, transparent 55%),
+      var(--bg);
+    display: grid; place-items: center;
+    -webkit-font-smoothing: antialiased;
+  }
+  .dark body {
+    background:
+      radial-gradient(1200px 700px at 20% -10%, #171b28 0%, transparent 60%),
+      radial-gradient(1000px 800px at 110% 110%, #101c26 0%, transparent 55%),
+      var(--bg);
+  }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+  svg { display: block; }
+
+  /* ============ the window ================================================ */
+  .window {
+    width: 820px; height: 560px;
+    display: flex; flex-direction: column;
+    color: var(--text); /* base ink — labels/values inherit this */
+    background: var(--surface);
+    backdrop-filter: blur(40px) saturate(1.6);
+    -webkit-backdrop-filter: blur(40px) saturate(1.6);
+    border-radius: var(--radius-win);
+    box-shadow: var(--shadow-win), inset 0 0 0 .5px rgba(255,255,255,.22);
+    overflow: hidden;
+  }
+
+  /* top bar: back · filter · type dropdown */
+  .topbar {
+    flex: none;
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .iconbtn {
+    width: 28px; height: 28px; border-radius: 8px;
+    display: grid; place-items: center;
+    color: var(--text-2);
+    transition: background .15s var(--spring), color .15s;
+    flex: none;
+  }
+  .iconbtn:hover { background: var(--fill); color: var(--text); }
+  .iconbtn svg { width: 15px; height: 15px; }
+  .search {
+    flex: 1; display: flex; align-items: center; gap: 7px;
+    background: var(--fill);
+    border-radius: 9px; padding: 6px 10px;
+    transition: box-shadow .2s, background .2s;
+  }
+  .search:focus-within { background: var(--fill-2); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .search svg { width: 13px; height: 13px; color: var(--text-2); flex: none; }
+  .search input {
+    flex: 1; min-width: 0; border: 0; outline: 0; background: none;
+    color: var(--text); font-size: 13px;
+  }
+  .search input::placeholder { color: var(--text-2); }
+
+  .dd { position: relative; flex: none; }
+  .ddbtn {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 12.5px; font-weight: 500; color: var(--text);
+    background: var(--panel);
+    box-shadow: 0 0 0 1px var(--hairline-strong);
+    border-radius: 8px; padding: 5px 10px;
+    transition: background .15s;
+  }
+  .ddbtn:hover { background: var(--panel-2); }
+  .ddbtn svg { width: 11px; height: 11px; color: var(--text-2); }
+  .ddmenu {
+    position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
+    min-width: 150px;
+    background: var(--panel);
+    box-shadow: 0 0 0 .5px var(--hairline-strong), 0 16px 40px rgba(0,0,0,.25);
+    border-radius: 11px; padding: 4px;
+    display: none;
+  }
+  .ddmenu.open { display: block; animation: pop .16s var(--spring); }
+  @keyframes pop { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+  .dditem {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    font-size: 12.5px; text-align: left;
+    padding: 6px 9px; border-radius: 7px; color: var(--text);
+  }
+  .dditem:hover { background: var(--fill); }
+  .dditem .pip { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .dditem .check { margin-left: auto; width: 12px; height: 12px; color: var(--accent); visibility: hidden; }
+  .dditem.on .check { visibility: visible; }
+
+  /* ============ body: list | detail ======================================= */
+  .bodywrap { flex: 1; display: flex; min-height: 0; }
+
+  .sidebar {
+    width: 300px; flex: none;
+    overflow-y: auto;
+    border-right: 1px solid var(--hairline);
+    padding: 6px 8px 10px;
+    scrollbar-width: thin; scrollbar-color: var(--hairline-strong) transparent;
+  }
+  .sidebar::-webkit-scrollbar { width: 4px; }
+  .sidebar::-webkit-scrollbar-thumb { background: var(--hairline-strong); border-radius: 4px; }
+
+  .dayhead {
+    font-size: 11px; font-weight: 600; color: var(--text-2);
+    padding: 10px 8px 5px;
+  }
+  .row {
+    display: flex; align-items: center; gap: 9px;
+    padding: 6px 8px; border-radius: 9px;
+    cursor: pointer; user-select: none;
+    transition: background .12s var(--spring);
+  }
+  .row:hover { background: var(--fill); }
+  .row.sel { background: var(--sel); }
+  .row .ricon {
+    width: 26px; height: 26px; border-radius: 7px; flex: none;
+    display: grid; place-items: center;
+    background: var(--fill); color: var(--text-2);
+  }
+  .row .ricon svg { width: 13px; height: 13px; }
+  .row .ricon.chip { background: none; }
+  .row .rlabel {
+    flex: 1; min-width: 0;
+    font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .row .rlabel.mono { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 11.5px; }
+  .row .rpin { width: 11px; height: 11px; color: #ff9f0a; flex: none; display: none; }
+  .row.pinned .rpin { display: block; }
+  .dot { width: 13px; height: 13px; border-radius: 50%; flex: none; box-shadow: inset 0 0 0 .5px rgba(0,0,0,.12); }
+  .mini { width: 26px; height: 26px; border-radius: 7px; flex: none;
+    background: linear-gradient(135deg, #2a2a5e, #7a4a8f 55%, #b05a7a); }
+
+  /* detail pane */
+  .detail { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .stage {
+    flex: 1; min-height: 0;
+    display: grid; place-items: center;
+    background: var(--stage);
+    border-bottom: 1px solid var(--hairline);
+    padding: 22px;
+    position: relative;
+  }
+  .stageactions {
+    position: absolute; top: 10px; right: 10px;
+    display: flex; gap: 4px;
+  }
+  .stagehint { position: absolute; bottom: 10px; left: 14px; font-size: 10.5px; color: var(--text-2); }
+
+  .bigcolor { text-align: center; }
+  .bigcolor .circle {
+    width: 128px; height: 128px; border-radius: 50%; margin: 0 auto 14px;
+    box-shadow: 0 12px 40px color-mix(in srgb, currentColor 35%, transparent), inset 0 0 0 .5px rgba(0,0,0,.15);
+  }
+  .bigcolor .hex { font-family: ui-monospace, "SF Mono", monospace; font-size: 14px; font-weight: 550; letter-spacing: .04em; }
+
+  .bigcode {
+    width: 100%; max-width: 400px;
+    background: var(--panel);
+    border-radius: 12px; padding: 14px 16px;
+    box-shadow: 0 0 0 1px var(--hairline), 0 12px 32px rgba(0,0,0,.10);
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size: 12px; line-height: 1.65;
+    overflow: hidden;
+  }
+  .tok-kw { color: #c678dd; } .tok-fn { color: #61afef; } .tok-str { color: #98c379; }
+  .tok-num { color: #d19a66; } .tok-cm { color: #7f848e; font-style: italic; }
+  .dark .tok-kw { color: #bf5af2; } .dark .tok-fn { color: #64a2ff; }
+  .dark .tok-str { color: #30d158; } .dark .tok-num { color: #ff9f0a; } .dark .tok-cm { color: #98989d; }
+
+  .biglink { text-align: center; }
+  .biglink .fav {
+    width: 60px; height: 60px; border-radius: 16px; margin: 0 auto 12px;
+    display: grid; place-items: center;
+    background: var(--accent-soft); color: var(--accent);
+    box-shadow: 0 12px 32px var(--accent-soft);
+  }
+  .biglink .fav svg { width: 26px; height: 26px; }
+  .biglink .t { font-size: 15px; font-weight: 600; margin-bottom: 3px; }
+  .biglink .u { font-size: 12px; color: var(--accent); word-break: break-all; }
+
+  .bigtext { max-width: 400px; font-size: 14px; line-height: 1.55; }
+
+  .bigimg {
+    width: 320px; height: 190px; border-radius: 14px;
+    background:
+      radial-gradient(200px 130px at 80% 15%, #ffb56b 0%, transparent 60%),
+      radial-gradient(280px 170px at 15% 90%, #6b8bff 0%, transparent 60%),
+      linear-gradient(135deg, #2a2a5e, #7a4a8f 55%, #b05a7a);
+    box-shadow: 0 20px 50px rgba(0,0,0,.35), inset 0 0 0 .5px rgba(255,255,255,.15);
+    display: flex; align-items: flex-end; justify-content: flex-end;
+    padding: 10px;
+  }
+  .bigimg .res { font-size: 10.5px; font-weight: 600; color: #fff;
+    background: rgba(0,0,0,.35); backdrop-filter: blur(8px);
+    border-radius: 6px; padding: 3px 8px; }
+
+  .bigsecret { text-align: center; }
+  .bigsecret .val {
+    font-family: ui-monospace, "SF Mono", monospace; font-size: 12.5px;
+    filter: blur(5px); user-select: none; transition: filter .25s;
+    max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    margin: 0 auto;
+  }
+  .bigsecret .val.revealed { filter: none; user-select: text; }
+  .revealbtn {
+    margin-top: 12px; font-size: 12px; font-weight: 600; color: var(--dot-secret);
+    border-radius: 8px; padding: 5px 12px;
+    transition: background .15s;
+  }
+  .revealbtn:hover { background: color-mix(in srgb, var(--dot-secret) 14%, transparent); }
+  .secretttl { margin-top: 10px; font-size: 11px; color: var(--dot-secret); font-weight: 600; }
+
+  .bigfiles { width: 300px; }
+  .bigfiles .filerow { display: flex; align-items: center; gap: 10px; padding: 8px 4px; }
+  .bigfiles .filerow + .filerow { border-top: 1px solid var(--hairline); }
+  .fileicon { width: 30px; height: 30px; border-radius: 8px; flex: none;
+    display: grid; place-items: center;
+    background: color-mix(in srgb, var(--dot-file) 15%, transparent); color: var(--dot-file);
+    font-size: 9.5px; font-weight: 700; }
+  .fname { font-size: 13px; font-weight: 500; }
+  .fsize { margin-left: auto; font-size: 11px; color: var(--text-2); }
+
+  /* information section */
+  .info { flex: none; padding: 12px 18px 14px; }
+  .infohead { font-size: 11px; font-weight: 600; color: var(--text-2); margin-bottom: 4px; }
+  .inforow {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+    padding: 7px 0; font-size: 12.5px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .inforow:last-child { border-bottom: 0; }
+  .inforow .k { color: var(--text-2); flex: none; }
+  .inforow .v { text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .inforow .v.mono { font-family: ui-monospace, "SF Mono", monospace; font-size: 11.5px; }
+
+  /* ============ bottom toolbar =========================================== */
+  .toolbar {
+    flex: none;
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px;
+    border-top: 1px solid var(--hairline);
+  }
+  .appbadge { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 550; }
+  .appicon {
+    width: 22px; height: 22px; border-radius: 6px;
+    background: linear-gradient(135deg, #ff6482, #ff375f);
+    display: grid; place-items: center; color: #fff;
+    box-shadow: 0 2px 6px rgba(255,55,95,.4);
+  }
+  .appicon svg { width: 12px; height: 12px; }
+  .copybtn {
+    margin: 0 auto;
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12.5px; font-weight: 600;
+    background: var(--text); color: var(--surface);
+    border-radius: 9px; padding: 7px 16px;
+    transition: transform .15s var(--spring), opacity .15s;
+  }
+  .copybtn:hover { opacity: .88; }
+  .copybtn:active { transform: scale(.97); }
+  .copybtn svg { width: 13px; height: 13px; }
+  .copybtn kbd, .actionshint kbd {
+    font-family: inherit; font-size: 10px; font-weight: 550;
+    background: color-mix(in srgb, currentColor 14%, transparent);
+    border-radius: 4px; padding: 1.5px 5px;
+  }
+  .actionshint { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-2); }
+  .actionshint kbd { color: var(--text-2); box-shadow: inset 0 0 0 1px var(--hairline-strong); }
+
+  .stagempty { color: var(--text-2); font-size: 12.5px; }
+
+  /* toast */
+  .toast {
+    position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%) translateY(16px);
+    background: var(--text); color: var(--surface);
+    font-size: 12px; font-weight: 550;
+    border-radius: 999px; padding: 7px 14px;
+    opacity: 0; pointer-events: none;
+    transition: opacity .2s, transform .25s var(--spring);
+    box-shadow: 0 8px 24px rgba(0,0,0,.25);
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* mockup chrome (not part of the app design) */
+  .mockupbar {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 8px; align-items: center;
+    font-size: 11px; color: var(--text-2);
+    background: var(--surface); backdrop-filter: blur(20px);
+    border-radius: 999px; padding: 6px 10px;
+    box-shadow: 0 0 0 1px var(--hairline), 0 8px 24px rgba(0,0,0,.12);
+    z-index: 10;
+  }
+  .mockupbar button { padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 550; color: var(--text-2); }
+  .mockupbar button.on { background: var(--text); color: var(--surface); }
+  .mockupbar .hint { opacity: .7; }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="mockupbar">
+  <button id="themeLight" class="on">Light</button>
+  <button id="themeDark">Dark</button>
+  <span class="hint">·</span>
+  <span class="hint">v2 master–detail — ↑↓ navigate · ⏎ or double-click to copy · del remove</span>
+</div>
+
+<div class="window">
+  <div class="topbar">
+    <button class="iconbtn" title="Back">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
+    </button>
+    <div class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="search" type="text" placeholder="Type to filter entries…" autocomplete="off">
+    </div>
+    <div class="dd">
+      <button class="ddbtn" id="ddbtn"><span id="ddlabel">All Types</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div class="ddmenu" id="ddmenu"></div>
+    </div>
+  </div>
+
+  <div class="bodywrap">
+    <div class="sidebar" id="list"></div>
+    <div class="detail" id="detail"></div>
+  </div>
+
+  <div class="toolbar">
+    <div class="appbadge">
+      <span class="appicon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="8" y="7" width="12" height="13" rx="2"/><path d="M16 3H6a2 2 0 0 0-2 2v11"/></svg></span>
+      Clipboard History
+    </div>
+    <button class="copybtn" id="copybtn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+      Copy to Clipboard <kbd>⏎</kbd>
+    </button>
+    <div class="actionshint">Actions <kbd>⌘</kbd><kbd>K</kbd></div>
+  </div>
+</div>
+
+<div class="toast" id="toast">Copied</div>
+
+<script>
+/* ============ sample data (ClipboardItem + detail metadata) ============== */
+const ITEMS = [
+  { id: 1, cat: "color",  day: "Today", app: "VS Code",  time: "17:05", pinned: true,
+    hex: "#6663F6", label: "#6663F6" },
+  { id: 2, cat: "color",  day: "Today", app: "Figma",    time: "16:58", hex: "#D459B5", label: "#D459B5" },
+  { id: 3, cat: "color",  day: "Today", app: "Chrome",   time: "16:51", hex: "#56FF59", label: "#56FF59" },
+  { id: 4, cat: "link",   day: "Today", app: "Chrome",   time: "16:40",
+    title: "Pinar Adamar — Design", url: "https://pinardamar.com", label: "https://pinardamar.com" },
+  { id: 5, cat: "link",   day: "Today", app: "Chrome",   time: "16:32",
+    title: "exten— GitHub", url: "https://github.com/pinar/exten…", label: "https://github.com/pinar/exten…" },
+  { id: 6, cat: "image",  day: "Today", app: "Screenshot", time: "15:59", w: 1423, h: 812, label: "Image (1423 × 812)" },
+  { id: 7, cat: "code",   day: "Today", app: "VS Code",  time: "15:20", label: "debounce(fn, ms) { …",
+    text: "function debounce(fn, ms) {\n  let t;\n  return (...args) => {\n    clearTimeout(t);\n    t = setTimeout(() => fn(...args), ms);\n  };\n}" },
+  { id: 8, cat: "file",   day: "Today", app: "Finder",   time: "14:47",
+    files: [["PDF","pitch-deck-v7.pdf","2.4 MB"],["PNG","hero-shot-final.png","1.1 MB"]], label: "pitch-deck-v7.pdf +1" },
+  { id: 9, cat: "plain",  day: "Today", app: "Notepad",  time: "13:02",
+    text: "Standup notes: ship the category fix, review the perf PR, then cut the release. Ask Devhoss about the hotkey chip.", label: "Standup notes: ship the category fix…" },
+  { id: 10, cat: "secret", day: "Today", app: "Terminal", time: "11:41",
+    secret: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c", label: "eyJhbGciOiJIUzI1NiIsInR5…" },
+  { id: 11, cat: "email", day: "Yesterday", app: "Mail", time: "21:15",
+    title: "design@vp0.com", sub: "Re: iOS library submission", label: "design@vp0.com" },
+  { id: 12, cat: "plain", day: "Yesterday", app: "Safari", time: "18:30",
+    text: "The first Macintosh computer shipped with 128 KB of RAM and a single 400K floppy drive.", label: "The first Macintosh computer shipped…" },
+];
+
+const CATS = {
+  all:    { label: "All Types", pip: null },
+  plain:  { label: "Text",      pip: "var(--dot-plain)" },
+  link:   { label: "Links",     pip: "var(--dot-link)" },
+  code:   { label: "Code",      pip: "var(--dot-code)" },
+  color:  { label: "Colors",    pip: "var(--dot-color)" },
+  email:  { label: "Emails",    pip: "var(--dot-email)" },
+  image:  { label: "Images",    pip: "var(--dot-image)" },
+  secret: { label: "Secrets",   pip: "var(--dot-secret)" },
+  file:   { label: "Files",     pip: "var(--dot-file)" },
+};
+
+const ICONS = {
+  plain:  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>`,
+  link:   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>`,
+  code:   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m8 6-6 6 6 6m8-12 6 6-6 6"/></svg>`,
+  email:  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>`,
+  image:  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m5 19 5.5-5.5L14 17l3-3 4 4"/></svg>`,
+  secret: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 2 13.5 9.5M15 3.5 18.5 7"/><rect x="3" y="10" width="12" height="11" rx="2" transform="rotate(-8 9 15.5)"/></svg>`,
+  file:   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/></svg>`,
+  color:  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/></svg>`,
+};
+
+let query = "", typeFilter = "all";
+let selectedId = ITEMS[0].id;
+
+/* ============ sidebar ==================================================== */
+function visibleItems() {
+  const q = query.toLowerCase();
+  return ITEMS
+    .filter(it => typeFilter === "all" || it.cat === typeFilter)
+    .filter(it => !q || it.label.toLowerCase().includes(q))
+    .sort((a, b) => (b.pinned - a.pinned) || a.id - b.id);
+}
+
+function rowHTML(it) {
+  let icon;
+  if (it.cat === "color") icon = `<span class="dot" style="background:${it.hex}"></span>`;
+  else if (it.cat === "image") icon = `<span class="mini"></span>`;
+  else icon = `<span class="ricon chip">${ICONS[it.cat] || ICONS.plain}</span>`;
+  const mono = it.cat === "color" || it.cat === "secret";
+  return `
+    ${it.cat === "color" ? `<span class="ricon chip" style="padding:0;background:none">${icon}</span>` : icon}
+    <span class="rlabel${mono ? " mono" : ""}">${it.label}</span>
+    <svg class="rpin" viewBox="0 0 24 24" fill="currentColor"><path d="M16 3v5.3l2 3.4v2.3h-5v7l-1 1-1-1v-7H6v-2.3l2-3.4V3h8z"/></svg>`;
+}
+
+function renderList() {
+  const list = document.getElementById("list");
+  const items = visibleItems();
+  if (!items.find(i => i.id === selectedId)) {
+    selectedId = items.length ? items[0].id : null;
+  }
+  let html = "", lastDay = "";
+  for (const it of items) {
+    if (it.day !== lastDay) {
+      html += `<div class="dayhead">${it.day}</div>`;
+      lastDay = it.day;
+    }
+    html += `<div class="row${it.id === selectedId ? " sel" : ""}${it.pinned ? " pinned" : ""}" data-id="${it.id}" title="Double-click to copy" onclick="select(${it.id})" ondblclick="dblCopy(${it.id})">${rowHTML(it)}</div>`;
+  }
+  list.innerHTML = html;
+}
+
+/* ============ detail pane ================================================ */
+function stageHTML(it) {
+  if (!it) return `<div class="stagempty">No entry selected</div>`;
+  switch (it.cat) {
+    case "color": return `
+      <div class="bigcolor">
+        <div class="circle" style="background:${it.hex};color:${it.hex}"></div>
+        <div class="hex">${it.hex}</div>
+      </div>`;
+    case "link": return `
+      <div class="biglink">
+        <div class="fav">${ICONS.link}</div>
+        <div class="t">${it.title}</div>
+        <div class="u">${it.url}</div>
+      </div>`;
+    case "email": return `
+      <div class="biglink">
+        <div class="fav" style="background:color-mix(in srgb,var(--dot-email) 14%,transparent);color:var(--dot-email);box-shadow:0 12px 32px rgba(255,159,10,.15)">${ICONS.email}</div>
+        <div class="t">${it.title}</div>
+        <div class="u" style="color:var(--text-2)">${it.sub}</div>
+      </div>`;
+    case "image": return `
+      <div class="bigimg"><span class="res">${it.w} × ${it.h}</span></div>`;
+    case "code": return `
+      <div class="bigcode"><span class="tok-cm">// debounce — 600 lines from VS Code</span><br>
+      <span class="tok-kw">function</span> <span class="tok-fn">debounce</span>(fn, <span class="tok-num">ms</span>) {<br>
+      &nbsp;&nbsp;<span class="tok-kw">let</span> t;<br>
+      &nbsp;&nbsp;<span class="tok-kw">return</span> (...args) <span class="tok-kw">=&gt;</span> {<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;clearTimeout(t);<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;t = <span class="tok-fn">setTimeout</span>(() <span class="tok-kw">=&gt;</span> <span class="tok-fn">fn</span>(...args), ms);<br>
+      &nbsp;&nbsp;};<br>
+      }</div>`;
+    case "file": return `
+      <div class="bigfiles">${it.files.map(([ext, name, size]) => `
+        <div class="filerow"><span class="fileicon">${ext}</span><span class="fname">${name}</span><span class="fsize">${size}</span></div>`).join("")}
+      </div>`;
+    case "secret": return `
+      <div class="bigsecret">
+        <div class="val" id="sv">${it.secret}</div>
+        <button class="revealbtn" onclick="event.stopPropagation(); revealSecret(this)">Show</button>
+        <div class="secretttl">Auto-deletes 60s after capture</div>
+      </div>`;
+    default: return `<div class="bigtext">${it.text || ""}</div>`;
+  }
+}
+
+function infoRows(it) {
+  if (!it) return "";
+  const rows = [
+    ["Application", it.app],
+    ["Content Type", CATS[it.cat].label.replace(/s$/, "")],
+    ["Copied", `${it.day}, ${it.time}`],
+  ];
+  if (it.cat === "text" || it.cat === "code") rows.push(["Size", `${(it.text || "").length} characters`]);
+  if (it.cat === "color") rows.push(["Value", it.hex, true]);
+  if (it.cat === "link") rows.push(["URL", it.url, true]);
+  return rows.map(([k, v, mono]) => `<div class="inforow"><span class="k">${k}</span><span class="v${mono ? " mono" : ""}">${v}</span></div>`).join("");
+}
+
+function renderDetail() {
+  const it = ITEMS.find(i => i.id === selectedId);
+  document.getElementById("detail").innerHTML = `
+    <div class="stage">
+      <div class="stageactions">
+        <button class="iconbtn" title="${it && it.pinned ? "Unpin" : "Pin"}" style="background:var(--fill)" onclick="togglePin()">
+          <svg viewBox="0 0 24 24" fill="${it && it.pinned ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2"><path d="M16 3v5.3l2 3.4v2.3h-5v7l-1 1-1-1v-7H6v-2.3l2-3.4V3h8z"/></svg>
+        </button>
+        <button class="iconbtn" title="Delete" style="background:var(--fill)" onclick="removeSelected()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+        </button>
+      </div>
+      ${stageHTML(it)}
+      <div class="stagehint">${it ? `${CATS[it.cat].label.replace(/s$/, "")} · double-click a row to copy, or press ⏎` : ""}</div>
+    </div>
+    <div class="info">
+      <div class="infohead">Information</div>
+      ${infoRows(it)}
+    </div>`;
+}
+
+function render() { renderList(); renderDetail(); }
+
+/* ============ interactions =============================================== */
+function select(id) { selectedId = id; render(); }
+
+/* double-click = grab-and-go: select the row and send it straight to the
+   clipboard, no trip through the detail pane needed. */
+function dblCopy(id) {
+  selectedId = id;
+  render();
+  copySelected();
+}
+
+function copySelected() {
+  const it = ITEMS.find(i => i.id === selectedId);
+  toast(it ? (it.cat === "color" ? `Copied ${it.hex}` : "Copied to clipboard") : "Nothing to copy");
+}
+
+function togglePin() {
+  const it = ITEMS.find(i => i.id === selectedId);
+  if (!it) return;
+  it.pinned = !it.pinned;
+  render();
+  toast(it.pinned ? "Pinned" : "Unpinned");
+}
+
+function removeSelected() {
+  const ix = ITEMS.findIndex(i => i.id === selectedId);
+  if (ix < 0) return;
+  ITEMS.splice(ix, 1);
+  render();
+  toast("Deleted");
+}
+
+function revealSecret(btn) {
+  const val = document.getElementById("sv");
+  const show = !val.classList.contains("revealed");
+  val.classList.toggle("revealed", show);
+  btn.textContent = show ? "Hide" : "Show";
+}
+
+let toastTimer;
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 1300);
+}
+
+document.getElementById("copybtn").onclick = copySelected;
+
+document.getElementById("search").addEventListener("input", e => { query = e.target.value; render(); });
+
+/* type dropdown */
+const ddmenu = document.getElementById("ddmenu");
+for (const [key, c] of Object.entries(CATS)) {
+  const b = document.createElement("button");
+  b.className = "dditem" + (key === "all" ? " on" : "");
+  b.innerHTML = (c.pip ? `<span class="pip" style="background:${c.pip}"></span>` : `<span class="pip" style="background:transparent"></span>`) + c.label +
+    `<svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m5 13 4 4L19 7"/></svg>`;
+  b.onclick = () => {
+    typeFilter = key;
+    document.getElementById("ddlabel").textContent = c.label;
+    ddmenu.querySelectorAll(".dditem").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+    ddmenu.classList.remove("open");
+    render();
+  };
+  ddmenu.appendChild(b);
+}
+document.getElementById("ddbtn").onclick = e => { e.stopPropagation(); ddmenu.classList.toggle("open"); };
+document.addEventListener("click", () => ddmenu.classList.remove("open"));
+
+/* keyboard: ↑↓ navigate · ⏎ copy · del remove — mirrors the real app */
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") {
+    if (e.key === "Escape") { e.target.value = ""; query = ""; render(); e.target.blur(); }
+    return;
+  }
+  const items = visibleItems();
+  if (!items.length) return;
+  const ix = items.findIndex(i => i.id === selectedId);
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    const next = e.key === "ArrowDown" ? Math.min(ix + 1, items.length - 1) : Math.max(ix - 1, 0);
+    selectedId = items[next].id;
+    render();
+    document.querySelector(`.row[data-id="${selectedId}"]`)?.scrollIntoView({ block: "nearest" });
+  } else if (e.key === "Enter") {
+    e.preventDefault(); copySelected();
+  } else if (e.key === "Delete") {
+    e.preventDefault(); removeSelected();
+  }
+});
+
+/* theme */
+function setTheme(dark) { document.documentElement.classList.toggle("dark", dark); syncThemeBar(); }
+function syncThemeBar() {
+  const dark = document.documentElement.classList.contains("dark");
+  document.getElementById("themeDark").classList.toggle("on", dark);
+  document.getElementById("themeLight").classList.toggle("on", !dark);
+}
+document.getElementById("themeLight").onclick = () => setTheme(false);
+document.getElementById("themeDark").onclick = () => setTheme(true);
+
+if (new URLSearchParams(location.search).has("dark")) {
+  document.documentElement.classList.add("dark");
+}
+// ?sel=<id> preselects an entry (QA/demo helper).
+const selParam = Number(new URLSearchParams(location.search).get("sel"));
+if (selParam && ITEMS.find(i => i.id === selParam)) selectedId = selParam;
+syncThemeBar();
+render();
+</script>
+</body>
+</html>
