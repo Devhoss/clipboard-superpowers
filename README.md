@@ -128,4 +128,4 @@ Dropped by design review: cloud sync (fights local-only guarantees, duplicates O
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Copyright (c) 2026 Hoss.
+MIT
