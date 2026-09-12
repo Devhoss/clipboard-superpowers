@@ -31,11 +31,14 @@ const TOKEN_CLASS: Record<TokenKind, string> = {
 };
 
 /** Syntax-highlighted code stage (mock v2 colors). Tokenizing is lazy — only
- * the selected clip, only when rendered — and never touches copy-back. */
+ * the selected clip, only when rendered — and never touches copy-back.
+ * max-h-full: the block must shrink to the stage's content box (which
+ * reserves the action-button/hint bands) — a centered block taller than the
+ * stage spills into those bands and underlaps the absolute UI. */
 function StageCode({ code }: { code: string }) {
   const lines = useMemo(() => tokenizeCode(code), [code]);
   return (
-    <pre className="max-h-[280px] max-w-[440px] overflow-auto rounded-xl bg-card p-4 font-mono text-[12px] leading-relaxed shadow-[0_0_0_1px_var(--border),0_12px_32px_rgba(0,0,0,0.10)]">
+    <pre className="h-full max-h-full w-full max-w-[440px] overflow-auto rounded-xl bg-card p-4 font-mono text-[12px] leading-relaxed shadow-[0_0_0_1px_var(--border),0_12px_32px_rgba(0,0,0,0.10)]">
       <code className="whitespace-pre">
         {lines.map((tokens, li) => (
           <span key={li}>
@@ -144,7 +147,7 @@ function Stage({
       return <StageSecret content={item.content} />;
     default:
       return (
-        <div className="max-h-[260px] max-w-[420px] overflow-auto whitespace-pre-wrap break-words text-[14px] leading-relaxed">
+        <div className="max-h-full max-w-[420px] overflow-auto whitespace-pre-wrap break-words text-[14px] leading-relaxed">
           {item.content}
         </div>
       );
@@ -309,7 +312,9 @@ export function DetailPane({
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">
-      <div className="relative grid min-h-0 flex-1 place-items-center overflow-hidden border-b border-border/60 bg-muted/30 p-5">
+      {/* pt/pb clear the absolute stage actions (top) and hint (bottom) so
+          long lines can never render underneath them. */}
+      <div className="relative grid min-h-0 flex-1 place-items-center overflow-hidden border-b border-border/60 bg-muted/30 px-5 pb-8 pt-12">
         <div className="absolute right-2.5 top-2.5 z-10 flex gap-1">
           {(item.category === "link" || item.kind === "file") && (
             <button

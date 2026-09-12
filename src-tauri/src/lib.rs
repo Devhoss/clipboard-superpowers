@@ -17,6 +17,41 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use settings::Settings;
 
+/// Show + focus the popup. Used by the tray (click AND double-click): the
+/// tray's job is summoning, never hiding — a toggle here races Windows'
+/// Click/Click/DoubleClick synthesis (click shows, second click hides =
+/// flash-and-disappear). Hiding lives on the hotkey, Esc, blur, and the
+/// tray menu's explicit Show/Hide item.
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        if !win.is_visible().unwrap_or(false) {
+            if let Err(e) = win.show() {
+                eprintln!("clipboard-superpowers: tray show failed: {e}");
+            }
+        }
+        if !win.is_focused().unwrap_or(false) {
+            if let Err(e) = win.set_focus() {
+                eprintln!("clipboard-superpowers: tray focus failed: {e}");
+            }
+            // Tray-click race: the shell reclaims foreground right after the
+            // click completes, stealing our just-gained focus — which trips
+            // blur-hide and the window flash-hides. Re-assert focus once the
+            // click settles; the blur timer cancels itself on gain.
+            let reassert = win.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(120));
+                if reassert.is_visible().unwrap_or(false)
+                    && !reassert.is_focused().unwrap_or(true)
+                {
+                    if let Err(e) = reassert.set_focus() {
+                        eprintln!("clipboard-superpowers: focus reassert failed: {e}");
+                    }
+                }
+            });
+        }
+    }
+}
+
 fn toggle_main_window(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         let visible = win.is_visible().unwrap_or(false);
@@ -164,12 +199,19 @@ pub fn run() {
                 // mouse-only recovery path when the hotkey is forgotten or
                 // taken by another app. Right-click still opens the menu.
                 .on_tray_icon_event(|tray, event| {
-                    if let tauri::tray::TrayIconEvent::Click {
-                        button: tauri::tray::MouseButton::Left,
-                        ..
-                    } = event
-                    {
-                        toggle_main_window(tray.app_handle());
+                    // Left-click and double-click both just summon the popup
+                    // (idempotent show) — a toggle here races Windows' Click/
+                    // Click/DoubleClick synthesis and flash-hides the window.
+                    // Hiding stays on the hotkey, Esc, blur, and the menu.
+                    match event {
+                        tauri::tray::TrayIconEvent::Click {
+                            button: tauri::tray::MouseButton::Left,
+                            ..
+                        }
+                        | tauri::tray::TrayIconEvent::DoubleClick { .. } => {
+                            show_main_window(tray.app_handle());
+                        }
+                        _ => {}
                     }
                 })
                 .build(app)?;

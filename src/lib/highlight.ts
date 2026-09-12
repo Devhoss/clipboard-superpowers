@@ -13,25 +13,31 @@ export interface Token {
 
 // Lowercase set on purpose: `True`/`None` highlight like `true`/`none`, and
 // mis-coloring a type name is acceptable for a preview.
+//
+// Deliberately EXCLUDED despite being keywords in some language: words that
+// are also high-frequency English (`in`, `of`, `not`, `and`, `or`, `is`,
+// `as`, `do`, `with`, `use`, `for`-adjacent `from`, `new`, `this`, `type`,
+// `match`, `where`, `using`, `default`, `global`, `final`, `long`, `package`)
+// — coloring them turned prose prompts that merely mention code into purple
+// confetti. Control flow (if/else/for/while/return) stays: the occasional
+// colored "if" in prose is worth correct highlighting of real code.
 const KEYWORDS = new Set(
   [
     // C-like / JS / TS
     "function", "return", "let", "const", "var", "if", "else", "for", "while",
-    "do", "class", "new", "extends", "implements", "interface", "type", "enum",
-    "import", "export", "from", "as", "default", "async", "await", "yield",
-    "try", "catch", "finally", "throw", "switch", "case", "break", "continue",
-    "typeof", "instanceof", "in", "of", "delete", "void", "static", "public",
-    "private", "protected", "final", "abstract", "override", "virtual",
-    "namespace", "using", "package",
+    "class", "extends", "implements", "interface", "enum", "import", "export",
+    "async", "await", "yield", "try", "catch", "finally", "throw", "switch",
+    "case", "break", "continue", "typeof", "instanceof", "delete", "void",
+    "static", "public", "private", "protected", "abstract", "override",
+    "virtual", "namespace",
     // Rust
-    "fn", "pub", "use", "mut", "impl", "struct", "trait", "where", "match",
-    "loop", "crate", "self", "super", "move",
+    "fn", "pub", "mut", "impl", "struct", "trait", "loop", "crate", "super",
+    "self",
     // Python / general
-    "def", "lambda", "elif", "pass", "raise", "with", "global", "nonlocal",
-    "assert", "not", "and", "or", "is", "del", "then", "begin", "end",
+    "def", "lambda", "elif", "pass", "raise", "assert", "del",
     // literals & common primitives
-    "true", "false", "null", "undefined", "none", "nil", "this",
-    "int", "float", "bool", "str", "string", "char", "double", "long",
+    "true", "false", "null", "undefined", "none", "nil",
+    "int", "float", "bool", "str", "string", "char", "double",
   ],
 );
 
