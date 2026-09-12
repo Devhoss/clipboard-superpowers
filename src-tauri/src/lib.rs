@@ -22,12 +22,15 @@ fn toggle_main_window(app: &tauri::AppHandle) {
         let visible = win.is_visible().unwrap_or(false);
         let focused = win.is_focused().unwrap_or(false);
         if visible && focused {
-            let _ = win.hide();
+            if let Err(e) = win.hide() {
+                eprintln!("clipboard-superpowers: toggle hide failed: {e}");
+            }
         } else {
             // NOTE: no win.center() here — the window stays where the user
             // dragged it. Initial position comes from tauri.conf.json.
-            let _ = win.show();
-            let _ = win.set_focus();
+            if let Err(e) = win.show().and_then(|()| win.set_focus()) {
+                eprintln!("clipboard-superpowers: toggle show/focus failed: {e}");
+            }
             // Tray-click race: the shell reclaims foreground right after the
             // tray click completes, stealing our just-gained focus — which
             // trips blur-hide and the window flash-hides. Re-assert focus
@@ -38,7 +41,9 @@ fn toggle_main_window(app: &tauri::AppHandle) {
                 if reassert.is_visible().unwrap_or(false)
                     && !reassert.is_focused().unwrap_or(true)
                 {
-                    let _ = reassert.set_focus();
+                    if let Err(e) = reassert.set_focus() {
+                        eprintln!("clipboard-superpowers: focus reassert failed: {e}");
+                    }
                 }
             });
         }
@@ -175,7 +180,9 @@ pub fn run() {
         .on_window_event(|window, event| {
             // the X button hides to tray instead of quitting
             if let WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
+                if let Err(e) = window.hide() {
+                    eprintln!("clipboard-superpowers: close-to-tray hide failed: {e}");
+                }
                 api.prevent_close();
             }
         })

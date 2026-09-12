@@ -167,7 +167,10 @@ pub fn paste_history_item(
     };
     copy_text_with_flavors(&state, &app, &text, html.as_deref())?;
     if let Some(win) = app.get_webview_window("main") {
-        let _ = win.hide();
+        // Paste auto-hides so focus falls back to the app receiving Ctrl+V.
+        if let Err(e) = win.hide() {
+            eprintln!("clipboard-superpowers: paste auto-hide failed: {e}");
+        }
     }
     std::thread::sleep(std::time::Duration::from_millis(150));
     send_ctrl_v()

@@ -76,6 +76,10 @@ function App() {
   const viewRef = useRef(view);
   viewRef.current = view;
   const hideOnBlurRef = useRef(true);
+  // White-screen audit: incremented on every window focus transition. A blur
+  // timer captures the epoch when armed; if it changed by fire time, a newer
+  // focus/show superseded the timer and the hide must not run.
+  const focusEpochRef = useRef(0);
   const debouncedRef = useRef("");
   debouncedRef.current = debounced;
   const categoryRef = useRef<Category | "all">("all");
@@ -208,6 +212,7 @@ function App() {
     };
     document.addEventListener("click", onOutsideClick);
     const focusUnlisten = win.onFocusChanged(({ payload: focused }) => {
+      focusEpochRef.current += 1;
       if (hideTimer) {
         clearTimeout(hideTimer);
         hideTimer = null;
@@ -215,18 +220,25 @@ function App() {
       if (!focused) {
         // hide_on_blur off = popup stays until Esc or the hotkey.
         if (!hideOnBlurRef.current) return;
+        const armedEpoch = focusEpochRef.current;
         hideTimer = setTimeout(() => {
-          // Still unfocused after the grace window? Then it's a real
-          // click-away — hide. Transient drag blips re-focus first.
-          const doHide = () => {
-            // Reset while hidden so the next summon paints the list on its
-            // very first frame — never a flash of the settings page.
-            setView("list");
-            win.hide().catch(console.error);
-          };
+          hideTimer = null;
+          // Stale-hide protection (white-screen audit): a hide timer may only
+          // fire into the exact state it was armed for. A newer focus/show
+          // supersedes it; an already-hidden window is never hidden again; an
+          // unverifiable state is skipped (never guess-hide — a hide landing
+          // right after a show can leave the WebView2 unrendered).
+          if (focusEpochRef.current !== armedEpoch) return;
           win.isFocused().then((focused) => {
-            if (!focused) doHide();
-          }).catch(doHide);
+            if (focused) return;
+            return win.isVisible().then((visible) => {
+              if (!visible) return;
+              // Reset while hidden so the next summon paints the list on its
+              // very first frame — never a flash of the settings page.
+              setView("list");
+              win.hide().catch(console.error);
+            });
+          }).catch((e) => console.error("blur-hide state check failed", e));
         }, 150);
       } else {
         setSearch("");
