@@ -5,6 +5,7 @@ pub mod db;
 pub mod richtext;
 pub mod ocr;
 pub mod settings;
+pub mod webview_profile;
 
 use std::sync::{Arc, Mutex};
 
@@ -123,6 +124,28 @@ pub fn apply_window_mode(app: &tauri::AppHandle, hide_on_blur: bool) -> Result<(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // MUST run before any webview exists: WebView2 reads the user-data folder
+    // when the first controller is created. Gives the app a deterministic,
+    // app-owned profile on E: (migrated from the fragile %LOCALAPPDATA%
+    // default, transient lock/cache state excluded) instead of inheriting a
+    // user-wide WEBVIEW2_USER_DATA_FOLDER that may point at another app's
+    // directory — the dead-webview startup regression's root cause.
+    match webview_profile::prepare() {
+        Some(parent) => {
+            std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &parent);
+            eprintln!(
+                "clipboard-superpowers: WebView2 data dir = {}",
+                parent.display()
+            );
+        }
+        // E: unavailable: fall back to the wry default, but never to a
+        // foreign inherited directory — clear any inherited preset.
+        None => {
+            std::env::remove_var("WEBVIEW2_USER_DATA_FOLDER");
+            eprintln!("clipboard-superpowers: using default WebView2 data dir");
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
@@ -133,6 +156,10 @@ pub fn run() {
         .setup(|app| {
             let t0 = std::time::Instant::now();
             eprintln!("clipboard-superpowers: setup start");
+            // The main webview window exists at this point, which proves the
+            // app-owned WebView2 profile initialized — pre-migration backups
+            // can now be removed (kept until this verification succeeded).
+            webview_profile::finish_migration();
             let (db_path, images_dir) = clipboard::ensure_app_dirs(app.handle());
             let settings_path = app
                 .handle()

@@ -108,6 +108,7 @@ design/                  # interactive redesign mockups (v1 cards, v2 master-det
 - **Hotkey:** `Ctrl+Alt+V` — re-recordable in Settings
 - **Actions shortcut:** `Ctrl+K` (in-popup only) — re-recordable in Settings
 - **Poll interval / cap:** `POLL_INTERVAL_MS = 300`, `MAX_ITEMS = 1000` in `clipboard.rs`
+- **WebView2 profile:** app-owned at `E:\AppData\ClipboardSuperpowers\WebView2` (`webview_profile.rs`). Existing profiles are migrated in with transient lock/cache state excluded; the source is kept as `*.migrated-bak` until the new profile is verified alive; stale `LOCK`/`lockfile` artifacts are cleaned on every startup. An inherited user-wide `WEBVIEW2_USER_DATA_FOLDER` (e.g. another app's) is deliberately overridden — that inheritance caused dead-WebView startups after Windows restarts.
 - **Window:** 820×560 (resizable 640–1100), frameless, `visible: false` + `skipTaskbar: true` (tray-first)
 - **Theme:** light/dark/system via `localStorage`, defaults to system
 
