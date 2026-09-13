@@ -49,7 +49,7 @@ Secrets are skipped by default; toggling that off keeps them visible for 60 seco
 ```bash
 cd E:/dev/clipboard-superpowers
 npm install
-npm run tauri dev      # Vite on :1420 + Tauri window
+npm run tauri dev      # Vite on :1560 + Tauri window
 ```
 
 ### Useful commands
