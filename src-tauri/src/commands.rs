@@ -98,19 +98,28 @@ fn copy_text_with_flavors(
             eprintln!("clipboard-superpowers: HTML flavor write failed ({e}), text kept");
         }
     }
-    // Re-copy = most recent: bump the row.
-    let conn = state.conn.lock().unwrap();
-    let now = chrono::Utc::now().to_rfc3339();
-    match db::touch_by_hash(&conn, &hash, &now).map_err(|e| e.to_string())? {
-        Some(row) => {
-            // Suppress only our own write (time-bound); the bump is done.
-            suppress_hash(state, &hash);
-            let _ = app.emit("clipboard:new-item", &row);
+    // Bump-on-copy is currently disabled (BUMP_ON_COPY, clipboard.rs): cards
+    // stay where they are. The implementation is kept — flip the flag to
+    // restore jump-to-top on copy.
+    if crate::clipboard::BUMP_ON_COPY {
+        // Re-copy = most recent: bump the row.
+        let conn = state.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        match db::touch_by_hash(&conn, &hash, &now).map_err(|e| e.to_string())? {
+            Some(row) => {
+                // Suppress only our own write (time-bound); the bump is done.
+                suppress_hash(state, &hash);
+                let _ = app.emit("clipboard:new-item", &row);
+            }
+            // Not in history — leave last_hash alone so the poller inserts it
+            // as a fresh row on the next tick.
+            None => {}
         }
-        // Not in history — leave last_hash alone so the poller inserts it
-        // as a fresh row on the next tick.
-        None => {}
     }
+    // Either way, the clipboard now holds content WE wrote: mark it so the
+    // poller never re-captures/re-bumps it (cards must stay in place).
+    suppress_hash(state, &hash);
+    state.note_copy_write(&hash);
     Ok(())
 }
 
@@ -226,15 +235,20 @@ pub fn copy_image_to_clipboard(
             bytes: std::borrow::Cow::Owned(raw.clone()),
         })
     })?;
-    let conn = state.conn.lock().unwrap();
-    let now = chrono::Utc::now().to_rfc3339();
-    match db::touch_by_hash(&conn, &hash, &now).map_err(|e| e.to_string())? {
-        Some(row) => {
-            suppress_hash(&state, &hash);
-            let _ = app.emit("clipboard:new-item", &row);
+    if crate::clipboard::BUMP_ON_COPY {
+        let conn = state.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        match db::touch_by_hash(&conn, &hash, &now).map_err(|e| e.to_string())? {
+            Some(row) => {
+                suppress_hash(&state, &hash);
+                let _ = app.emit("clipboard:new-item", &row);
+            }
+            None => {}
         }
-        None => {}
     }
+    // Copy-without-jump: mark our own write so the poller skips it.
+    suppress_hash(&state, &hash);
+    state.note_copy_write(&hash);
     Ok(())
 }
 

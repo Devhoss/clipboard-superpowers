@@ -180,6 +180,7 @@ pub fn run() {
                 settings: Arc::new(Mutex::new(settings.clone())),
                 conn: Arc::new(Mutex::new(conn)),
                 last_hash: Arc::new(Mutex::new(None)),
+                last_copy_write: Arc::new(Mutex::new(None)),
                 deleted: Arc::new(Mutex::new(Vec::new())),
             };
             clipboard::start_polling(app.handle().clone(), state.clone());

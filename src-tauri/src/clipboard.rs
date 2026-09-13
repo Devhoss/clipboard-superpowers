@@ -25,6 +25,16 @@ pub const SUPPRESS_WINDOW_SECS: u64 = 2;
 /// (PR3). Fixed — no setting: brief enough to be safe, long enough to paste.
 pub const SECRET_TTL_SECS: i64 = 60;
 
+/// Copy-without-jump: when false (current), copying a card does NOT bump it
+/// to the top — history stays exactly where it is. The bump implementation
+/// (touch_by_hash + live event) is kept in the copy paths; flip this to true
+/// to restore jump-to-top on copy. Note: disabling the command-side bump
+/// alone is NOT enough — the poller re-reads the clipboard every tick and
+/// would re-bump the copied content via the ON CONFLICT clause once the 2s
+/// suppress window expires. That is why every copy also records its hash in
+/// `last_copy_write` (see read_clipboard's own-write skip).
+pub const BUMP_ON_COPY: bool = false;
+
 /// Shared so `copy_to_clipboard` can suppress re-capturing our own writes.
 /// Time-bound: a permanent hash would swallow legitimate re-copies of the
 /// same content forever (copy X twice → second copy ignored).
@@ -123,8 +133,30 @@ pub struct AppState {
     pub settings: Arc<Mutex<Settings>>,
     pub conn: DbConn,
     pub last_hash: LastHash,
+    /// Hash of the content our most recent copy wrote to the clipboard.
+    /// While the ambient clipboard still holds exactly this content, the
+    /// poller skips it — otherwise re-capturing our own write would bump the
+    /// copied card back to the top (BUMP_ON_COPY is false).
+    pub last_copy_write: Arc<Mutex<Option<String>>>,
     /// (hash, clipboard-seq-at-delete) pairs. See `deleted_matches`.
     pub deleted: DeletedHashes,
+}
+
+impl AppState {
+    /// Record that our copy just wrote `hash` to the clipboard.
+    pub fn note_copy_write(&self, hash: &str) {
+        *self.last_copy_write.lock().unwrap() = Some(hash.to_string());
+    }
+
+    /// True when the ambient clipboard content is exactly what our last copy
+    /// wrote (and must therefore be skipped by the poller).
+    pub fn is_own_copy_write(&self, hash: &str) -> bool {
+        self.last_copy_write
+            .lock()
+            .unwrap()
+            .as_deref()
+            == Some(hash)
+    }
 }
 
 fn max_items(state: &AppState) -> i64 {
@@ -343,6 +375,12 @@ fn read_clipboard(state: &AppState) -> Option<Captured> {
                 return None;
             }
             let hash = hash_content(text.as_bytes());
+            // Copy-without-jump: the clipboard still holds exactly what our
+            // last copy wrote — skip it, or the poller would bump the copied
+            // card back to the top once the 2s suppress window expires.
+            if state.is_own_copy_write(&hash) {
+                return None;
+            }
             // Time-bound suppression: our own writes are ignored for ~2s, but
             // an identical copy after that is a genuine re-copy and must bump.
             if seen_recently(state, &hash) {
@@ -362,6 +400,10 @@ fn read_clipboard(state: &AppState) -> Option<Captured> {
     if want_images {
         if let Ok(ImageData { width, height, bytes }) = clipboard.get_image() {
             let hash = image_hash(width, height, &bytes);
+            // Copy-without-jump: same own-write skip as the text branch.
+            if state.is_own_copy_write(&hash) {
+                return None;
+            }
             if seen_recently(state, &hash) {
                 return None;
             }
