@@ -9,11 +9,11 @@ A fast, offline clipboard manager for Windows. Replaces `Win+V` with a searchabl
 - **Master–detail popup** — compact history list (grouped by day) on the left, large preview + information pane on the right; glassy, keyboard-first, light/dark
 - **Capture everything** — polls clipboard every 300ms, dedupes via SHA-256 (file drops are domain-tagged so a dir and its path-as-text stay separate entries), re-copies bump to top
 - **Auto-categories** — `link` / `email` / `color` / `code` (incl. ``` fenced blocks and IDE HTML flavors) / `secret` / `image` / `file` / `plain`
-- **Secret hygiene** — `password:`-style clips, OTPs, PEM keys, keyword-less JWTs and provider tokens (`sk-`, `ghp_`, `AKIA…`): skipped by default, or captured with a 60s auto-delete
+- **Secret hygiene** — `password:`-style clips, OTPs, PEM keys, keyword-less JWTs and provider tokens (`sk-`, `ghp_`, `AKIA…`): skipped by default, or retained locally but hidden from the app when the setting is off; re-enabling purges them and securely overwrites their bytes on disk. Hidden secrets are excluded from search, counts, and copy/paste.
 - **Application attribution** — the detail pane shows which app the clip was copied from (`GetClipboardOwner`, pretty names, degrades silently when unavailable)
 - **Syntax highlighting** — the code preview is tokenized on demand (keywords/calls/strings/numbers/comments); zero libraries, zero capture-time cost, copy-back always uses raw text
 - **Rich text** — IDE/web HTML flavor is sanitized (ammonia) for the preview and written back on copy, so Word/Notion keep formatting
-- **Search** — debounced 200ms, `LIKE` with `%`/`_` escaped, pinned-first sorting
+- **Search** — debounced 200ms, `LIKE` with `%`/`_` escaped, pinned-first sorting; `date:YYYY-MM-DD` filters by local calendar day and can be combined with text
 - **Fast by design** — list payloads carry 300-char previews (17× smaller IPC on a 1000-row history), one shared SQLite connection, optimistic pin/delete, copy loads the full row by id; see `src-tauri/tests/perf.rs`
 - **Popup UX** — `Ctrl+Alt+V` toggles, `Esc` hides, blur hides, focus refocuses search, paginated list (50/page)
 - **Tray + autostart** — hide-to-tray on X, `Show/Hide` + `Quit` menu, launches on login
@@ -38,11 +38,11 @@ A fast, offline clipboard manager for Windows. Replaces `Win+V` with a searchabl
 | Pin / unpin | Pin icon in the preview pane — pinned stays on top, survives pruning |
 | Delete | Trash icon in the preview pane — images also delete the PNG + cache |
 | Filter by type | **All Types** dropdown |
-| Search | Type to filter; `Esc` clears, `Esc` again hides |
+| Search | Type to filter; use `date:YYYY-MM-DD` for a local-day filter; `Esc` clears, `Esc` again hides |
 | Actions menu | `Ctrl+K` (re-recordable in Settings) — settings + appearance |
 | Quit | Tray → Quit (X only hides to tray) |
 
-Secrets are skipped by default; toggling that off keeps them visible for 60 seconds, then auto-deleted. History caps at **1000 unpinned** items; oldest pruned automatically.
+Secrets are skipped by default. With **Skip passwords & OTPs** off, secret captures are retained in the local database but hidden from the list, search, detail, and actions; turning the setting back on purges them. History caps at **1000 unpinned** items; oldest non-secret unpinned items are pruned automatically.
 
 ## Develop
 
@@ -55,10 +55,10 @@ npm run tauri dev      # Vite on :1560 + Tauri window
 ### Useful commands
 
 ```bash
-npm test                # vitest — api, format, keyboardNav, highlight, imageCache (40 tests)
+npm test                # vitest — api, format, keyboardNav, highlight, imageCache, secret visibility (44 tests)
 npx tsc --noEmit        # typecheck
 npm run build           # frontend only → dist/
-cargo test              # Rust — db, categorize, clipboard, richtext, settings (56 tests), run in src-tauri/
+cargo test              # Rust — db, categorize, clipboard, richtext, settings (73 tests), run in src-tauri/
 cargo check             # fast Rust check, run in src-tauri/
 cargo test --test perf -- --ignored --nocapture   # perf benchmark (run in src-tauri/)
 npm run tauri build     # full installer → src-tauri/target/release/bundle/

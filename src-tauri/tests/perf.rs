@@ -10,9 +10,8 @@
 
 use clipboard_superpowers_lib::categorize::hash_content;
 use clipboard_superpowers_lib::db::{
-    delete_item, expire_secrets, get_all_items, get_history_previews, get_item_by_id,
-    insert_item, open_db, search_history_previews, search_items, toggle_pin, touch_by_hash,
-    ClipboardItem,
+    delete_item, get_all_items, get_history_previews, get_item_by_id, insert_item, open_db,
+    purge_secrets, search_history_previews, search_items, toggle_pin, touch_by_hash, ClipboardItem,
 };
 use std::time::Instant;
 
@@ -68,10 +67,7 @@ fn time_op(label: &str, iters: u32, mut f: impl FnMut(usize)) {
         f(i as usize);
     }
     let total = start.elapsed();
-    println!(
-        "{label:<58} {iters:>4} ops  avg {:>12.2?}",
-        total / iters
-    );
+    println!("{label:<58} {iters:>4} ops  avg {:>12.2?}", total / iters);
 }
 
 #[test]
@@ -88,14 +84,28 @@ fn perf_actions_on_full_history() {
     let mut stamp = 0u64;
     let mut next_ts = || {
         stamp += 1;
-        format!("2026-09-11T{:02}:{:02}:{:02}.{:06}Z", stamp / 3600 % 24, stamp / 60 % 60, stamp % 60, stamp % 1_000_000)
+        format!(
+            "2026-09-11T{:02}:{:02}:{:02}.{:06}Z",
+            stamp / 3600 % 24,
+            stamp / 60 % 60,
+            stamp % 60,
+            stamp % 1_000_000
+        )
     };
     let (n_small, n_code, n_rich) = (900u32, 60u32, 40u32);
     for i in 0..n_small {
-        let c = format!("small clip #{i} — hello world, a short note with a link https://x.com/{i}");
+        let c =
+            format!("small clip #{i} — hello world, a short note with a link https://x.com/{i}");
         insert_item(
             &conn,
-            &with_app(item(c, None, next_ts()), if i % 2 == 0 { "Notepad" } else { "Google Chrome" }),
+            &with_app(
+                item(c, None, next_ts()),
+                if i % 2 == 0 {
+                    "Notepad"
+                } else {
+                    "Google Chrome"
+                },
+            ),
             1000,
         )
         .unwrap();
@@ -130,13 +140,34 @@ fn perf_actions_on_full_history() {
     // --- capture path -------------------------------------------------------
     let conn = open_db(&db_path).unwrap();
     time_op("insert_item — small clip (capture)", 200, |i| {
-        insert_item(&conn, &with_app(item(format!("bench small {i} xyz"), None, next_ts()), "Notepad"), 1000).unwrap();
+        insert_item(
+            &conn,
+            &with_app(
+                item(format!("bench small {i} xyz"), None, next_ts()),
+                "Notepad",
+            ),
+            1000,
+        )
+        .unwrap();
     });
     time_op("insert_item — 600-line code clip (capture)", 10, |i| {
-        insert_item(&conn, &item(format!("// bench {i}\n{code}"), None, next_ts()), 1000).unwrap();
+        insert_item(
+            &conn,
+            &item(format!("// bench {i}\n{code}"), None, next_ts()),
+            1000,
+        )
+        .unwrap();
     });
     time_op("insert_item — rich clip w/ 32k html (capture)", 10, |i| {
-        insert_item(&conn, &with_app(item(format!("bench rich {i}"), Some(html.clone()), next_ts()), "Google Chrome"), 1000).unwrap();
+        insert_item(
+            &conn,
+            &with_app(
+                item(format!("bench rich {i}"), Some(html.clone()), next_ts()),
+                "Google Chrome",
+            ),
+            1000,
+        )
+        .unwrap();
     });
 
     // --- the refresh after delete/pin: now preview-only --------------------
@@ -179,9 +210,13 @@ fn perf_actions_on_full_history() {
         .find(|i| i.kind == "text" && i.content.len() > 60_000)
         .expect("seeded 600-line clip missing");
     let big_id = big_row.id;
-    time_op("get_item_by_id — 66KB row (copy-by-id loader)", 100, |_| {
-        get_item_by_id(&conn, big_id).unwrap();
-    });
+    time_op(
+        "get_item_by_id — 66KB row (copy-by-id loader)",
+        100,
+        |_| {
+            get_item_by_id(&conn, big_id).unwrap();
+        },
+    );
 
     // --- pin / delete ---------------------------------------------------------
     let ids: Vec<i64> = all.iter().map(|i| i.id).collect();
@@ -196,13 +231,23 @@ fn perf_actions_on_full_history() {
     time_op("search_history_previews(\"clip\") (NEW)", 20, |_| {
         search_history_previews(&conn, "clip", 200).unwrap();
     });
-    time_op("search_items(\"clip\") (OLD full rows, for scale)", 20, |_| {
-        search_items(&conn, "clip", 200).unwrap();
+    time_op(
+        "search_items(\"clip\") (OLD full rows, for scale)",
+        20,
+        |_| {
+            search_items(&conn, "clip", 200).unwrap();
+        },
+    );
+
+    // Secret rows are retained but excluded from every renderer-facing read
+    // and action. They are also exempt from the normal history cap.
+    time_op("get_visible_counts (retained secrets excluded)", 20, |_| {
+        clipboard_superpowers_lib::db::get_visible_counts(&conn).unwrap();
     });
 
-    // --- the 300ms poller's secret sweep -------------------------------------
-    time_op("expire_secrets (every 300ms tick)", 20, |_| {
-        expire_secrets(&conn, "2026-09-12T00:00:00Z").unwrap();
+    // --- settings transition: purge all retained secrets when skip is on ------
+    time_op("purge_secrets (enable-skip transition)", 20, |_| {
+        purge_secrets(&conn).unwrap();
     });
 
     let _ = std::fs::remove_dir_all(&dir);

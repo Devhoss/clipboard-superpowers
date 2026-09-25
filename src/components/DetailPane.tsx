@@ -6,7 +6,7 @@ import { dayLabel, extractColor, formatBytes, formatTime } from "@/lib/format";
 import { getCachedImage } from "@/lib/imageCache";
 import { getCachedFileMeta } from "@/lib/metaCache";
 import type { ClipboardItem } from "@/lib/types";
-import { Link2, Mail, Pin, PinOff, Trash2 } from "lucide-react";
+import { Link2, Mail, Pin, PinOff, Trash2, Eye, EyeOff } from "lucide-react";
 import { FolderOpen, ExternalLink } from "lucide-react";
 
 function fileName(p: string): string {
@@ -59,8 +59,8 @@ function StageCode({ code }: { code: string }) {
   );
 }
 
-/** Big center-stage preview per category. Renders the FULL row (loaded from
- * the backend) — the list payload is only a 300-char preview. */
+/** Render a category in the big stage. Secret rows never reach this
+ * boundary: `DetailPane` returns a redaction state before rendering it. */
 function Stage({
   item,
   onOpenUrl,
@@ -144,7 +144,11 @@ function Stage({
       );
     }
     case "secret":
-      return <StageSecret content={item.content} />;
+      return (
+        <div className="text-center text-[12.5px] text-muted-foreground">
+          Secret hidden from history
+        </div>
+      );
     default:
       return (
         <div className="max-h-full max-w-[420px] overflow-auto whitespace-pre-wrap break-words text-[14px] leading-relaxed">
@@ -212,31 +216,6 @@ function StageFileFooter({ content, count }: { content: string; count: number })
   );
 }
 
-function StageSecret({ content }: { content: string }) {
-  const [revealed, setRevealed] = useState(false);
-  return (
-    <div className="text-center">
-      <div
-        className={`mx-auto max-w-[380px] overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[12.5px] transition-[filter] duration-200 ${
-          revealed ? "" : "select-none blur-[5px]"
-        }`}
-      >
-        {content}
-      </div>
-      <button
-        type="button"
-        onClick={() => setRevealed((r) => !r)}
-        className="mt-3 rounded-lg px-3 py-1 text-[12px] font-semibold text-red-400 transition-colors hover:bg-red-400/15"
-      >
-        {revealed ? "Hide" : "Show"}
-      </button>
-      <div className="mt-2 text-[11px] font-semibold text-red-400">
-        Auto-deletes 60s after capture
-      </div>
-    </div>
-  );
-}
-
 /** Right pane: big preview + Information key-value rows (v2 design).
  * Links/files open ONLY via the Open button (or their clickable stage rows) —
  * never implicitly, so browsing the list can't yank you to another window. */
@@ -247,6 +226,7 @@ export function DetailPane({
   onOpen,
   onOpenUrl,
   onOpenPath,
+  secretEpoch = 0,
 }: {
   item: ClipboardItem | null;
   onPin: (item: ClipboardItem) => void;
@@ -254,13 +234,24 @@ export function DetailPane({
   onOpen: (item: ClipboardItem) => void;
   onOpenUrl: (url: string) => void;
   onOpenPath: (path: string) => void;
+  /** Bumped by the parent on window blur; drops any revealed secret. */
+  secretEpoch?: number;
 }) {
   // List rows carry a 300-char preview; load the full row for the stage.
   const [full, setFull] = useState<ClipboardItem | null>(null);
+  // Revealed secret content. Deliberately local state, never lifted into the
+  // item list and never persisted. It is dropped on selection change AND by
+  // the secretEpoch bump on window blur, so it cannot outlive the window.
+  const [revealed, setRevealed] = useState<string | null>(null);
+  const [revealBusy, setRevealBusy] = useState(false);
+  useEffect(() => {
+    setRevealed(null);
+  }, [secretEpoch]);
   useEffect(() => {
     let cancelled = false;
     setFull(null);
-    if (!item) return;
+    setRevealed(null);
+    if (!item || item.category === "secret") return;
     api
       .getHistoryItem(item.id)
       .then((row) => !cancelled && setFull(row))
@@ -274,6 +265,95 @@ export function DetailPane({
     return (
       <div className="grid min-w-0 flex-1 place-items-center text-[12.5px] text-muted-foreground">
         No entry selected
+      </div>
+    );
+  }
+
+  if (item.category === "secret") {
+    const meta2 = CATEGORY_META.secret;
+    return (
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="relative grid min-h-0 flex-1 place-items-center overflow-hidden border-b border-border/60 bg-muted/30 px-5 pb-8 pt-12">
+          <div className="absolute right-2.5 top-2.5 z-10 flex gap-1">
+            <button
+              type="button"
+              title={revealed === null ? "Reveal secret" : "Hide secret"}
+              aria-label={revealed === null ? "Reveal secret" : "Hide secret"}
+              onClick={() => {
+                if (revealed !== null) {
+                  setRevealed(null);
+                  return;
+                }
+                setRevealBusy(true);
+                api
+                  .revealSecret(item.id)
+                  .then(setRevealed)
+                  .catch((e) => console.error(e))
+                  .finally(() => setRevealBusy(false));
+              }}
+              className="grid size-7 place-items-center rounded-lg bg-card/80 text-muted-foreground shadow-sm transition-colors hover:text-foreground"
+            >
+              {revealed === null ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+            </button>
+            <button
+              type="button"
+              title={item.pinned ? "Unpin" : "Pin"}
+              aria-label={item.pinned ? "Unpin" : "Pin"}
+              onClick={() => onPin(item)}
+              className={`grid size-7 place-items-center rounded-lg bg-card/80 text-muted-foreground shadow-sm transition-colors hover:text-foreground ${
+                item.pinned ? "text-amber-400" : ""
+              }`}
+            >
+              {item.pinned ? <Pin className="size-3.5" /> : <PinOff className="size-3.5" />}
+            </button>
+            <button
+              type="button"
+              title="Delete"
+              aria-label="Delete"
+              onClick={() => onDelete(item)}
+              className="grid size-7 place-items-center rounded-lg bg-card/80 text-muted-foreground shadow-sm transition-colors hover:bg-destructive/10 hover:text-destructive"
+            >
+              <Trash2 className="size-3.5" />
+            </button>
+          </div>
+          {revealed === null ? (
+            <div className="flex flex-col items-center gap-2 text-center">
+              <div className="text-[12.5px] text-muted-foreground">
+                {revealBusy ? "Revealing…" : "Secret hidden"}
+              </div>
+              <div className="text-[11px] text-muted-foreground/70">
+                Use the eye button to show it
+              </div>
+            </div>
+          ) : (
+            <pre className="h-full max-h-full w-full max-w-[440px] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-card p-4 font-mono text-[12px] leading-relaxed shadow-[0_0_0_1px_var(--border),0_12px_32px_rgba(0,0,0,0.10)]">
+              {revealed}
+            </pre>
+          )}
+          <div className="absolute bottom-2.5 left-3.5 truncate text-[10.5px] text-muted-foreground">
+            {revealed === null
+              ? "Hidden · re-hides when the window loses focus"
+              : "Double-click a row to copy · Enter pastes into the previous app"}
+          </div>
+        </div>
+        <div className="shrink-0 px-4 pb-3 pt-2.5">
+          <div className="mb-0.5 text-[11px] font-semibold text-muted-foreground">Information</div>
+          {(
+            [
+              ["Content Type", meta2?.single ?? "secret"],
+              ["Copied", `${dayLabel(item.created_at)}, ${formatTime(item.created_at)}`],
+              ...(item.source_app ? [["Application", item.source_app] as [string, string]] : []),
+            ] as [string, React.ReactNode][]
+          ).map(([k, v]) => (
+            <div
+              key={k}
+              className="flex items-baseline justify-between gap-3 border-b border-border/50 py-[7px] text-[12.5px] last:border-0"
+            >
+              <span className="shrink-0 text-muted-foreground">{k}</span>
+              <span className="min-w-0 truncate text-right">{v}</span>
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
@@ -302,9 +382,7 @@ export function DetailPane({
   }
 
   const hint =
-    item.category === "secret"
-      ? "Secret · auto-expires"
-      : item.category === "link"
+    item.category === "link"
         ? "Open opens the browser · double-click copies the URL"
         : item.kind === "file"
           ? "Open launches Explorer · double-click copies the path"

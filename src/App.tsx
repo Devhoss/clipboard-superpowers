@@ -7,7 +7,7 @@ import { EntryList } from "./components/EntryList";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { TypeDropdown } from "./components/TypeDropdown";
 import { api, EVENTS } from "./lib/api";
-import { matchesCombo, moveSelection } from "./lib/keyboardNav";
+import { matchesActionsCombo, moveSelection } from "./lib/keyboardNav";
 import { evictCachedImage } from "@/lib/imageCache";
 import type { AppSettings, Category, ClipboardItem, ThemeMode } from "./lib/types";
 import {
@@ -49,6 +49,18 @@ function placeItem(prev: ClipboardItem[], item: ClipboardItem): ClipboardItem[] 
   return [item, ...prev.filter((i) => i.id !== item.id)].sort(byPinnedThenRecent);
 }
 
+/** Combine the text box and the date picker into one backend query string.
+ * The backend already parses `date:YYYY-MM-DD` out of a query, so the picker
+ * reuses that token instead of adding a second filter parameter. A date-only
+ * query has no text term — which matters, because that is the case where
+ * secret rows are listed. */
+function buildQuery(text: string, date: string): string {
+  const t = text.trim();
+  const d = date.trim();
+  if (!d) return t;
+  return t ? `${t} date:${d}` : `date:${d}`;
+}
+
 function getInitialTheme(): ThemeMode {
   const stored = localStorage.getItem(THEME_STORAGE_KEY);
   return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
@@ -57,6 +69,10 @@ function getInitialTheme(): ThemeMode {
 function App() {
   const [items, setItems] = useState<ClipboardItem[]>([]);
   const [search, setSearch] = useState("");
+  // Date picker value, folded into the same query string the backend parses
+  // (`date:YYYY-MM-DD`). Reusing the token keeps one code path on each side
+  // rather than adding a second filter parameter end to end.
+  const [dateFilter, setDateFilter] = useState("");
   const [debounced, setDebounced] = useState("");
   const [category, setCategory] = useState<Category | "all">("all");
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
@@ -80,6 +96,12 @@ function App() {
   // timer captures the epoch when armed; if it changed by fire time, a newer
   // focus/show superseded the timer and the hide must not run.
   const focusEpochRef = useRef(0);
+  // Bumped whenever the window loses focus so the DetailPane can drop any
+  // revealed secret text. Kept separate from focusEpochRef: that one guards
+  // the hide timer, this one guards secret redaction.
+  const [secretEpoch, setSecretEpoch] = useState(0);
+  const secretEpochRef = useRef(0);
+  secretEpochRef.current = secretEpoch;
   const debouncedRef = useRef("");
   debouncedRef.current = debounced;
   const categoryRef = useRef<Category | "all">("all");
@@ -111,9 +133,11 @@ function App() {
   }, [debounced, fetchFor]);
 
   useEffect(() => {
-    const t = setTimeout(() => setDebounced(search), 200);
+    // Debounced text plus the (immediate) date filter. The picker should feel
+    // instant, so its value is not debounced — only the typing is.
+    const t = setTimeout(() => setDebounced(buildQuery(search, dateFilter)), 200);
     return () => clearTimeout(t);
-  }, [search]);
+  }, [search, dateFilter]);
 
   useEffect(() => {
     fetchFor(debounced);
@@ -132,6 +156,7 @@ function App() {
   useEffect(() => {
     const unlisten = listen<ClipboardItem>(EVENTS.newItem, (e) => {
       const item = e.payload;
+      if (item.category === "secret") return;
       // A filtered view (search / type) must not have out-of-filter rows
       // pushed in — otherwise any capture made while a search is active
       // pops into the results and lingers there. Refetch and let the
@@ -171,14 +196,19 @@ function App() {
       const typing =
         !!target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA");
       if (
-        matchesCombo(e, settingsRef.current?.actions_hotkey ?? "Ctrl+K") &&
-        !typing
+        matchesActionsCombo(
+          e,
+          settingsRef.current?.actions_hotkey ?? "Ctrl+K",
+          target,
+          inputRef.current,
+        )
       ) {
         if (viewRef.current !== "list") return;
         e.preventDefault();
         setActionsOpen((o) => !o);
         return;
       }
+      if (typing && target !== inputRef.current) return;
       // Keyboard nav: list view only — settings has its own inputs.
       if (viewRef.current !== "list") return;
       const rows = visibleRef.current;
@@ -213,6 +243,13 @@ function App() {
     document.addEventListener("click", onOutsideClick);
     const focusUnlisten = win.onFocusChanged(({ payload: focused }) => {
       focusEpochRef.current += 1;
+      // A revealed secret must not survive losing focus: the window is the
+      // only thing keeping it on screen. Bump the epoch so the DetailPane
+      // effect drops the revealed text and re-renders it redacted.
+      if (!focused) {
+        secretEpochRef.current += 1;
+        setSecretEpoch((n) => n + 1);
+      }
       if (hideTimer) {
         clearTimeout(hideTimer);
         hideTimer = null;
@@ -290,7 +327,7 @@ function App() {
   }, [theme]);
 
   const filtered = useMemo(
-    () => (category === "all" ? items : items.filter((i) => i.category === category)),
+    () => items.filter((i) => category === "all" || i.category === category),
     [items, category],
   );
   const visible = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount]);
@@ -475,7 +512,7 @@ function App() {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Type to filter entries…"
+              placeholder="Type to filter entries… date:YYYY-MM-DD"
               autoComplete="off"
               className="min-w-0 flex-1 border-0 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
             />
@@ -494,7 +531,28 @@ function App() {
               </button>
             )}
           </div>
-          <TypeDropdown value={category} onChange={handleCategory} />
+          <div className="flex shrink-0 items-center gap-1.5">
+            <input
+              type="date"
+              aria-label="Filter by date"
+              title="Filter by day"
+              value={dateFilter}
+              onChange={(e) => setDateFilter(e.target.value)}
+              className="h-7 rounded-lg border border-border/60 bg-muted/70 px-2 text-[11.5px] text-muted-foreground outline-none transition-colors focus:border-foreground/25 focus:text-foreground"
+            />
+            {dateFilter && (
+              <button
+                type="button"
+                aria-label="Clear date filter"
+                title="Clear date"
+                onClick={() => setDateFilter("")}
+                className="grid size-5 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+              >
+                <X className="size-3" />
+              </button>
+            )}
+            <TypeDropdown value={category} onChange={handleCategory} />
+          </div>
         </div>
       )}
 
@@ -523,7 +581,7 @@ function App() {
             selectedId={selectedItem?.id ?? null}
             scrollKey={scrollKey}
             totalCount={filtered.length}
-            visibleCount={visibleCount}
+            visibleCount={visible.length}
             onShowMore={() => setVisibleCount((n) => n + 50)}
             onSelect={(id) => setSelectedId(id)}
             onDblCopy={dblCopyItem}
@@ -535,6 +593,7 @@ function App() {
             onOpen={openItem}
             onOpenUrl={openUrlItem}
             onOpenPath={openPathItem}
+            secretEpoch={secretEpoch}
           />
         </div>
       )}

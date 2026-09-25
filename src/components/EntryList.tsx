@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { dayLabel } from "@/lib/format";
 import type { ClipboardItem } from "@/lib/types";
-import { Code2, File, FileText, Image as ImageIcon, KeyRound, Link2, Mail, Pin } from "lucide-react";
+import { Code2, File, FileText, Image as ImageIcon, Link2, Mail, Pin } from "lucide-react";
 
 function fileName(p: string): string {
   const seg = p.split(/[/\\]/).filter(Boolean);
@@ -41,11 +41,9 @@ function RowIcon({ item }: { item: ClipboardItem }) {
     item.category === "code" ? <Code2 className="size-3.5" /> :
     item.category === "image" ? <ImageIcon className="size-3.5" /> :
     item.category === "email" ? <Mail className="size-3.5" /> :
-    item.category === "secret" ? <KeyRound className="size-3.5" /> :
     item.category === "file" ? <File className="size-3.5" /> :
     <FileText className="size-3.5" />;
   const tint =
-    item.category === "secret" ? "text-red-400" :
     item.category === "image" ? "text-green-400" :
     item.category === "file" ? "text-sky-300" :
     "text-muted-foreground";
@@ -90,6 +88,10 @@ export function EntryList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scrollKey]);
 
+  // Secret rows are ordinary visible rows now; the backend already redacts
+  // their preview. No component-level filtering.
+  const safeItems = items;
+  const safeTotal = totalCount;
   let lastDay = "";
   return (
     <div
@@ -98,7 +100,7 @@ export function EntryList({
       role="listbox"
       aria-label="Clipboard entries"
     >
-      {items.map((item) => {
+      {safeItems.map((item) => {
         const day = dayLabel(item.created_at);
         const header = day !== lastDay ? day : null;
         lastDay = day;
@@ -126,9 +128,7 @@ export function EntryList({
               <RowIcon item={item} />
               <span
                 className={`min-w-0 flex-1 truncate text-[12.5px] ${
-                  item.category === "color" || item.category === "secret"
-                    ? "font-mono text-[11.5px]"
-                    : ""
+                  item.category === "color" ? "font-mono text-[11.5px]" : ""
                 }`}
               >
                 {rowLabel(item)}
@@ -138,20 +138,20 @@ export function EntryList({
           </div>
         );
       })}
-      {items.length === 0 && (
+      {safeItems.length === 0 && (
         <div className="grid place-items-center px-4 py-10 text-center text-[12px] leading-relaxed text-muted-foreground">
           No matching entries.
           <br />
           Adjust the search or type filter.
         </div>
       )}
-      {visibleCount < totalCount && (
+      {visibleCount < safeTotal && (
         <button
           type="button"
           onClick={onShowMore}
           className="mt-2 w-full rounded-lg py-1.5 text-center text-[11.5px] text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
         >
-          Show more ({totalCount - visibleCount} remaining)
+          Show more ({safeTotal - visibleCount} remaining)
         </button>
       )}
     </div>

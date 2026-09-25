@@ -1,9 +1,17 @@
+// Developer helper: print recent history rows for local inspection.
+// Secret rows are excluded — they are retained locally but must never be
+// printed to a terminal, a log, or a pasted issue.
 fn main() {
     let dir = std::env::var("APPDATA").unwrap_or_else(|_| "C:/Users/Hossa/AppData/Roaming".into());
     let path = format!("{}/com.hoss.clipsuper/clipboard.db", dir);
     let conn = rusqlite::Connection::open(&path).expect("open db");
     let mut stmt = conn
-        .prepare("SELECT id, kind, category, substr(content, 1, 60), created_at FROM clipboard_history ORDER BY id DESC LIMIT 20")
+        .prepare(
+            "SELECT id, kind, category, substr(content, 1, 60), created_at
+             FROM clipboard_history
+             WHERE category <> 'secret'
+             ORDER BY id DESC LIMIT 20",
+        )
         .unwrap();
     let rows = stmt
         .query_map([], |r| {
@@ -20,5 +28,13 @@ fn main() {
     for row in rows {
         println!("{}", row.unwrap());
     }
-    println!("total: {}", conn.query_row("SELECT COUNT(*) FROM clipboard_history", [], |r| r.get::<_, i64>(0)).unwrap_or(-1));
+    println!(
+        "total: {}",
+        conn.query_row(
+            "SELECT COUNT(*) FROM clipboard_history WHERE category <> 'secret'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap_or(-1)
+    );
 }

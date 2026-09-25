@@ -11,6 +11,9 @@ export const api = {
   // pane loads this when the selection changes.
   getHistoryItem: (id: number): Promise<ClipboardItem | null> =>
     invoke("get_history_item", { id }),
+  // The ONLY call that returns secret content. One row, one explicit click.
+  // The result must not be cached: the caller drops it on blur/restart.
+  revealSecret: (id: number): Promise<string> => invoke("reveal_secret", { id }),
   copyToClipboard: (text: string): Promise<void> =>
     invoke("copy_to_clipboard", { text }),
   // Copy a history row by id: the backend loads the full text/html itself —

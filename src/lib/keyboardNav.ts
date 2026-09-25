@@ -57,3 +57,17 @@ export function matchesCombo(e: KeyboardEvent, combo: string): boolean {
     e.code === m.code
   );
 }
+
+/** Actions is an app shortcut, not text entry. It must work while the search
+ * box owns focus, while remaining inert in Settings' other text inputs. */
+export function matchesActionsCombo(
+  e: KeyboardEvent,
+  combo: string,
+  target: EventTarget | null,
+  searchInput: HTMLInputElement | null,
+): boolean {
+  if (!matchesCombo(e, combo)) return false;
+  const element = target instanceof HTMLElement ? target : null;
+  const typing = element?.tagName === "INPUT" || element?.tagName === "TEXTAREA";
+  return !typing || element === searchInput;
+}

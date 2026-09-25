@@ -14,9 +14,9 @@ pub struct Settings {
     pub capture_images: bool,
     /// Hide the popup when it loses focus. Off = stays until Esc/hotkey.
     pub hide_on_blur: bool,
-    /// Skip passwords/OTPs/private keys before they touch the DB (PR3).
-    /// Old settings.json files lack this key — the serde default keeps them
-    /// loading instead of failing parse and resetting the whole file.
+    /// Skip passwords/OTPs/private keys before they touch the DB.
+    /// When enabled, this also purges stored secret rows; turning it off keeps
+    /// them stored but out of the renderer.
     #[serde(default = "default_skip_secrets")]
     pub skip_secrets: bool,
     /// Capture Explorer file copies (CF_HDROP) as file cards (PR5).
@@ -294,5 +294,22 @@ mod tests {
         s.skip_secrets = false;
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert!(!back.skip_secrets);
+    }
+
+    #[test]
+    fn old_file_without_actions_hotkey_is_accepted_by_update_validation() {
+        let old = r#"{
+            "hotkey": "Ctrl+Alt+V",
+            "max_items": 1000,
+            "launch_on_login": true,
+            "capture_text": true,
+            "capture_images": true,
+            "hide_on_blur": true,
+            "skip_secrets": false
+        }"#;
+        let mut s: Settings = serde_json::from_str(old).unwrap();
+        assert_eq!(s.actions_hotkey, "Ctrl+K");
+        s.normalize();
+        assert!(parse_hotkey(&s.actions_hotkey).is_ok());
     }
 }

@@ -8,7 +8,7 @@ use chrono::Utc;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::categorize::{categorize, hash_content, is_secret};
-use crate::db::{expire_secrets, insert_item, open_db, ClipboardItem};
+use crate::db::{insert_item, open_db, ClipboardItem};
 use crate::richtext::{parse_cf_html, sanitize_fragment};
 use crate::settings::Settings;
 
@@ -21,9 +21,6 @@ pub const MAX_HTML_CHARS: usize = 32_000;
 /// lands within a tick or two (300ms); after the window expires an identical
 /// external copy counts as a genuine re-copy and bumps to the top.
 pub const SUPPRESS_WINDOW_SECS: u64 = 2;
-/// How long a captured secret survives when the user turned skipping off
-/// (PR3). Fixed — no setting: brief enough to be safe, long enough to paste.
-pub const SECRET_TTL_SECS: i64 = 60;
 
 /// Copy-without-jump: when false (current), copying a card does NOT bump it
 /// to the top — history stays exactly where it is. The bump implementation
@@ -140,6 +137,9 @@ pub struct AppState {
     pub last_copy_write: Arc<Mutex<Option<String>>>,
     /// (hash, clipboard-seq-at-delete) pairs. See `deleted_matches`.
     pub deleted: DeletedHashes,
+    /// Serializes secret-policy transitions with capture. When skip is turned
+    /// on, purge completes before a concurrent secret insert can be released.
+    pub secret_policy: Arc<Mutex<()>>,
 }
 
 impl AppState {
@@ -151,11 +151,7 @@ impl AppState {
     /// True when the ambient clipboard content is exactly what our last copy
     /// wrote (and must therefore be skipped by the poller).
     pub fn is_own_copy_write(&self, hash: &str) -> bool {
-        self.last_copy_write
-            .lock()
-            .unwrap()
-            .as_deref()
-            == Some(hash)
+        self.last_copy_write.lock().unwrap().as_deref() == Some(hash)
     }
 }
 
@@ -174,7 +170,13 @@ pub fn ensure_app_dirs(app: &AppHandle) -> (PathBuf, PathBuf) {
     (data_dir.join("clipboard.db"), images_dir)
 }
 
-fn save_image_png(dir: &PathBuf, hash: &str, width: usize, height: usize, rgba: &[u8]) -> Option<PathBuf> {
+fn save_image_png(
+    dir: &PathBuf,
+    hash: &str,
+    width: usize,
+    height: usize,
+    rgba: &[u8],
+) -> Option<PathBuf> {
     let img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> =
         image::ImageBuffer::from_raw(width as u32, height as u32, rgba.to_vec())?;
     let path = dir.join(format!("{hash}.png"));
@@ -212,11 +214,11 @@ pub fn file_drop_hash(joined_paths: &str) -> String {
 /// and the UI omits the row. Best-effort by design: never fails a capture.
 fn clipboard_owner_app() -> Option<String> {
     use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::DataExchange::GetClipboardOwner;
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
-    use windows::Win32::System::DataExchange::GetClipboardOwner;
     use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 
     unsafe {
@@ -301,19 +303,27 @@ fn store_and_emit(
     item: ClipboardItem,
     hash: String,
 ) {
+    // Secrets are never emitted, even if a future caller invokes the
+    // generic store helper directly.
+    if item.category == "secret" {
+        suppress_hash(state, &hash);
+        return;
+    }
     match insert_item(conn, &item, max_items(state)) {
-        Ok(outcome) => {
+        Ok(_) => {
             suppress_hash(state, &hash);
-            // Emit the STORED row, not the freshly built item: the builder
-            // always has pinned=false, so emitting it visually unpinned a
-            // card whenever our own copy was re-captured after the suppress
-            // window (pin held in DB, UI showed unpinned).
+            // A hash collision or a concurrent re-categorisation must not
+            // make a secret event reach the renderer. Re-read the stored
+            // category before emitting anything.
             let emitted = match crate::db::get_by_hash(conn, &hash) {
-                Ok(Some(row)) => row,
-                _ => {
-                    let mut fallback = item;
-                    fallback.id = outcome.id;
-                    fallback
+                Ok(Some(row)) if row.category != "secret" => row,
+                Ok(_) => {
+                    suppress_hash(state, &hash);
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("clipboard-superpowers: emit readback failed: {e}");
+                    return;
                 }
             };
             let _ = app.emit("clipboard:new-item", &emitted);
@@ -398,7 +408,12 @@ fn read_clipboard(state: &AppState) -> Option<Captured> {
         }
     }
     if want_images {
-        if let Ok(ImageData { width, height, bytes }) = clipboard.get_image() {
+        if let Ok(ImageData {
+            width,
+            height,
+            bytes,
+        }) = clipboard.get_image()
+        {
             let hash = image_hash(width, height, &bytes);
             // Copy-without-jump: same own-write skip as the text branch.
             if state.is_own_copy_write(&hash) {
@@ -459,35 +474,24 @@ fn read_file_list() -> Option<Vec<String>> {
     Some(paths)
 }
 
-fn capture_and_store(
-    app: &AppHandle,
-    state: &AppState,
-    conn: &rusqlite::Connection,
-) {
+fn capture_and_store(app: &AppHandle, state: &AppState, conn: &rusqlite::Connection) {
     // Store phase runs WITHOUT the gate: bytes are already in memory, so
     // PNG encoding + SQLite never block a click-copy.
     let Some(captured) = read_clipboard(state) else {
         return;
     };
     match captured {
-        Captured::Text { text, hash, source_app } => {
-            // Secret sweep runs every tick (PR3): one cheap DELETE keeps the
-            // 60s TTL honest even when nothing new is captured.
-            let cutoff = (Utc::now() - chrono::Duration::seconds(SECRET_TTL_SECS))
-                .to_rfc3339();
-            if let Err(e) = expire_secrets(conn, &cutoff) {
-                eprintln!("clipboard-superpowers: secret expiry failed: {e}");
-            }
+        Captured::Text {
+            text,
+            hash,
+            source_app,
+        } => {
             if is_secret(&text) {
+                let _policy = state.secret_policy.lock().unwrap();
                 if state.settings.lock().unwrap().skip_secrets {
-                    // Drop silently but suppress the hash — otherwise the
-                    // poller re-reads and re-drops the same secret every tick
-                    // after the 2s window expires.
                     suppress_hash(state, &hash);
                     return;
                 }
-                // Captured with the secret category: visible for pasting,
-                // gone after SECRET_TTL_SECS via the sweep above.
                 let item = ClipboardItem {
                     id: 0,
                     content: text,
@@ -497,9 +501,15 @@ fn capture_and_store(
                     pinned: false,
                     created_at: Utc::now().to_rfc3339(),
                     html: None,
-                    source_app: None,
+                    source_app,
                 };
-                store_and_emit(app, state, conn, item, hash);
+                if let Err(e) = insert_item(conn, &item, max_items(state)) {
+                    eprintln!("clipboard-superpowers: secret insert failed: {e}");
+                } else {
+                    // Stored secrets are intentionally not emitted to the
+                    // renderer; they are an internal capture store only.
+                    suppress_hash(state, &hash);
+                }
                 return;
             }
             // HTML flavor is read in a second clipboard open (arboard holds
@@ -521,7 +531,13 @@ fn capture_and_store(
             };
             store_and_emit(app, state, conn, item, hash);
         }
-        Captured::Image { width, height, bytes, hash, source_app } => {
+        Captured::Image {
+            width,
+            height,
+            bytes,
+            hash,
+            source_app,
+        } => {
             let Some(path) = save_image_png(&state.images_dir, &hash, width, height, &bytes) else {
                 return;
             };
@@ -538,7 +554,11 @@ fn capture_and_store(
             };
             store_and_emit(app, state, conn, item, hash);
         }
-        Captured::Files { paths, hash, source_app } => {
+        Captured::Files {
+            paths,
+            hash,
+            source_app,
+        } => {
             // content is the plain path list: clicking the card copies paths
             // as text through the existing copy path (same hash → bump, no
             // duplicate row). Sizes come lazily via file_meta (PR5).
@@ -611,14 +631,13 @@ fn first_element_from(frag: &str) -> Option<String> {
     let start = frag.find('<')?;
     let frag = &frag[start..];
     const TAGS: [&str; 19] = [
-        "h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "span", "b", "strong",
-        "i", "em", "u", "a", "ul", "ol", "li", "pre",
+        "h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "span", "b", "strong", "i", "em", "u", "a",
+        "ul", "ol", "li", "pre",
     ];
     let lower = frag.to_lowercase();
-    let ok = TAGS.iter().any(|t| {
-        lower.contains(&format!("<{t}>"))
-            || lower.contains(&format!("<{t} "))
-    });
+    let ok = TAGS
+        .iter()
+        .any(|t| lower.contains(&format!("<{t}>")) || lower.contains(&format!("<{t} ")));
     ok.then(|| frag.to_string())
 }
 
@@ -718,7 +737,10 @@ mod tests {
         use crate::richtext::build_cf_html;
         // Shape 1 (seen live): full CF_HTML document with header.
         let doc = build_cf_html("<b>hi</b>");
-        assert_eq!(extract_fragment(doc.as_bytes()).as_deref(), Some("<b>hi</b>"));
+        assert_eq!(
+            extract_fragment(doc.as_bytes()).as_deref(),
+            Some("<b>hi</b>")
+        );
         // Shape 2 (seen live): already-sliced bare fragment, no header.
         assert_eq!(
             extract_fragment(b"<h1>x</h1>").as_deref(),
@@ -732,7 +754,8 @@ mod tests {
     fn extract_fragment_rejects_degenerate_shapes() {
         // Live: StartFragment offset landed mid-attribute — dangling CSS
         // would otherwise render as visible garbage text.
-        let mid_tag = b"e: ; --tw-numeric-spacing: ; font-size: 1.25rem;\">French bulldog</li></ul>";
+        let mid_tag =
+            b"e: ; --tw-numeric-spacing: ; font-size: 1.25rem;\">French bulldog</li></ul>";
         assert_eq!(extract_fragment(mid_tag).as_deref(), None);
         // Closing tags alone carry no recoverable formatting.
         assert_eq!(extract_fragment(b"</li></ul>").as_deref(), None);
@@ -749,6 +772,9 @@ mod tests {
 \n<a href=\"https://x.com\">x</a>";
         let got = extract_fragment(stale).unwrap();
         assert!(!got.contains("Version"), "header leaked: {got:?}");
-        assert!(got.contains("<a href=\"https://x.com\">"), "anchor lost: {got:?}");
+        assert!(
+            got.contains("<a href=\"https://x.com\">"),
+            "anchor lost: {got:?}"
+        );
     }
 }

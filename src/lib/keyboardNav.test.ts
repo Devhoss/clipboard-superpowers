@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clampSelection, matchesCombo, moveSelection, parseCombo } from "./keyboardNav";
+import { clampSelection, matchesActionsCombo, matchesCombo, moveSelection, parseCombo } from "./keyboardNav";
 
 describe("moveSelection", () => {
   it("moves down by delta", () => {
@@ -59,5 +59,21 @@ describe("parseCombo / matchesCombo", () => {
     expect(matchesCombo(ev({ code: "KeyK", ctrlKey: true, shiftKey: true }), "Ctrl+K")).toBe(false);
     expect(matchesCombo(ev({ code: "Digit7", ctrlKey: true, altKey: true }), "Ctrl+Alt+7")).toBe(true);
     expect(matchesCombo(ev({ code: "KeyK" }), "bogus")).toBe(false);
+  });
+
+  it("allows the Actions combo from the search box but not other inputs", () => {
+    const event = {
+      ctrlKey: true,
+      altKey: false,
+      shiftKey: false,
+      metaKey: false,
+      code: "KeyK",
+    } as KeyboardEvent;
+    const searchInput = document.createElement("input");
+    const otherInput = document.createElement("input");
+
+    expect(matchesActionsCombo(event, "Ctrl+K", searchInput, searchInput)).toBe(true);
+    expect(matchesActionsCombo(event, "Ctrl+K", otherInput, searchInput)).toBe(false);
+    expect(matchesActionsCombo(event, "Ctrl+K", document.body, searchInput)).toBe(true);
   });
 });

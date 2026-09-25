@@ -17,7 +17,7 @@ export interface ClipboardItem {
   source_app: string | null;
 }
 
-export const CATEGORIES: Category[] = ["plain", "link", "code", "color", "email", "image", "secret", "file"];
+export const CATEGORIES: Category[] = ["plain", "link", "code", "color", "email", "image", "file"];
 
 export interface AppSettings {
   hotkey: string;
@@ -35,6 +35,8 @@ export interface AppSettings {
 export interface HistoryStats {
   total: number;
   pinned: number;
+  /** Rows that enabling "skip secrets" would permanently delete. */
+  secrets: number;
   db_bytes: number;
 }
 

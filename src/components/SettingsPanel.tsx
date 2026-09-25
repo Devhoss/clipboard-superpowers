@@ -91,7 +91,35 @@ export function SettingsPanel({
   const [stats, setStats] = useState<HistoryStats | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [armed, setArmed] = useState<"unpinned" | "all" | null>(null);
+  const [armed, setArmed] = useState<"unpinned" | "all" | "secrets" | null>(null);
+
+  // Flipping this toggle ON purges stored secrets permanently. The first tap
+  // only arms it; the second commits and deletes. Same two-step contract as the
+  // Clear buttons, because from the user's side both destroy data — and this
+  // one destroys rows they can currently see and copy.
+  const toggleSkipSecrets = (v: boolean) => {
+    // Turning it off never deletes anything, so it stays a single tap.
+    if (!v) {
+      setArmed(null);
+      setDraft((d) => ({ ...d, skip_secrets: false }));
+      return;
+    }
+    if (armed !== "secrets") {
+      setArmed("secrets");
+      return;
+    }
+    setArmed(null);
+    setDraft((d) => ({ ...d, skip_secrets: true }));
+  };
+
+  const secretCount = stats?.secrets ?? 0;
+  const skipHint = draft.skip_secrets
+    ? "On: new secrets are skipped and stored ones stay deleted"
+    : armed === "secrets"
+      ? `Tap again, then Save, to delete ${secretCount} secret${secretCount === 1 ? "" : "s"} for good`
+      : secretCount > 0
+        ? `Off: keeps ${secretCount} stored secret${secretCount === 1 ? "" : "s"}, listed as ••••••••`
+        : "Off: secrets are stored and listed as ••••••••, revealed on demand";
 
   const refreshStats = useCallback(() => {
     api.getStats().then(setStats).catch(console.error);
@@ -126,6 +154,9 @@ export function SettingsPanel({
       .updateSettings(draft)
       .then((saved) => {
         onSaved(saved);
+        // A save with skipping on purges secrets, so the row count shown in
+        // the hint must not keep advertising rows that are already gone.
+        refreshStats();
         setNotice("Saved — hotkey, autostart and limits applied live.");
       })
       .catch((e) => setError(String(e)));
@@ -218,9 +249,9 @@ export function SettingsPanel({
         />
         <Toggle
           checked={draft.skip_secrets}
-          onChange={(v) => setDraft((d) => ({ ...d, skip_secrets: v }))}
+          onChange={toggleSkipSecrets}
           label="Skip passwords & OTPs"
-          hint="Off keeps them 60 seconds, then auto-deletes"
+          hint={skipHint}
         />
         <Toggle
           checked={draft.capture_files}

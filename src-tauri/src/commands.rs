@@ -23,17 +23,45 @@ pub fn get_history(state: State<'_, AppState>) -> Result<Vec<ClipboardItem>, Str
     with_conn(&state, |conn| db::get_history_previews(conn, limit))
 }
 
+/// Upper bound on rows returned for a *searched* query.
+///
+/// The empty-query path uses `max_items` (the whole retained history), but a
+/// search re-runs on every debounced keystroke while the renderer shows only 50
+/// rows at a time — shipping the full history to render 50 means ~1.5 MB of
+/// preview payload per keystroke at the 5000-item setting. Paging still reaches
+/// the rest via "Show more", so this trades a bound on how deep a search can
+/// page for a flat IPC cost.
+const SEARCH_RESULT_CAP: i64 = 200;
+
 #[tauri::command]
-pub fn search_history(state: State<'_, AppState>, query: String) -> Result<Vec<ClipboardItem>, String> {
+pub fn search_history(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<Vec<ClipboardItem>, String> {
     let query = query.trim().to_string();
     let limit = state.settings.lock().unwrap().max_items;
     with_conn(&state, |conn| {
         if query.is_empty() {
             db::get_history_previews(conn, limit)
         } else {
-            db::search_history_previews(conn, &query, 200)
+            db::search_history_previews(conn, &query, SEARCH_RESULT_CAP)
         }
     })
+}
+
+/// Return the content of ONE retained secret row, for the reveal button.
+///
+/// The only renderer-facing command that returns secret bytes. Guarded so it
+/// cannot be used to bulk-read: it takes a single id, and it refuses
+/// non-secret rows (so it can't be used to bypass the 300-char preview cap on
+/// ordinary clips). The frontend must not cache the result — it is dropped on
+/// window blur and on restart.
+#[tauri::command]
+pub fn reveal_secret(state: State<'_, AppState>, id: i64) -> Result<String, String> {
+    match with_conn(&state, |conn| db::reveal_secret(conn, id))? {
+        Some(content) => Ok(content),
+        None => Err(format!("no secret item with id {id}")),
+    }
 }
 
 #[tauri::command]
@@ -41,7 +69,8 @@ pub fn delete_item(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     with_conn(&state, |conn| {
         let row: Result<Option<(String, String, String)>, _> = conn
             .query_row(
-                "SELECT content, kind, content_hash FROM clipboard_history WHERE id = ?1",
+                "SELECT content, kind, content_hash FROM clipboard_history
+                 WHERE id = ?1",
                 [id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
@@ -74,7 +103,10 @@ pub fn toggle_pin(state: State<'_, AppState>, id: i64) -> Result<(), String> {
 /// Full row by id. List/search payloads carry 300-char content previews, so
 /// the detail pane loads the complete row here when the selection changes.
 #[tauri::command]
-pub fn get_history_item(state: State<'_, AppState>, id: i64) -> Result<Option<ClipboardItem>, String> {
+pub fn get_history_item(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<Option<ClipboardItem>, String> {
     with_conn(&state, |conn| db::get_item_by_id(conn, id))
 }
 
@@ -144,7 +176,7 @@ pub fn copy_history_item(
 ) -> Result<(), String> {
     let (text, html) = {
         let conn = state.conn.lock().unwrap();
-        match db::get_item_by_id(&conn, id).map_err(|e| e.to_string())? {
+        match db::get_item_for_copy(&conn, id).map_err(|e| e.to_string())? {
             Some(row) if row.kind != "image" => (row.content, row.html),
             Some(_) => return Err("image cards must use copy_image_to_clipboard".into()),
             None => return Err(format!("no history item with id {id}")),
@@ -168,7 +200,7 @@ pub fn paste_history_item(
 ) -> Result<(), String> {
     let (text, html) = {
         let conn = state.conn.lock().unwrap();
-        match db::get_item_by_id(&conn, id).map_err(|e| e.to_string())? {
+        match db::get_item_for_copy(&conn, id).map_err(|e| e.to_string())? {
             Some(row) if row.kind == "text" => (row.content, row.html),
             Some(_) => return Err("only text rows support paste".into()),
             None => return Err(format!("no history item with id {id}")),
@@ -290,7 +322,12 @@ fn stat_paths(paths: &[String]) -> FileMeta {
             Err(_) => missing.push(p.clone()),
         }
     }
-    FileMeta { total_bytes, existing, dirs, missing }
+    FileMeta {
+        total_bytes,
+        existing,
+        dirs,
+        missing,
+    }
 }
 
 /// Extract printed text from one of our image cards (PR6). Guarded to the
@@ -311,15 +348,45 @@ pub fn ocr_image(
     if text.trim().is_empty() {
         return Err("no text found in image".into());
     }
+    let secret = crate::categorize::is_secret(&text);
+    if secret {
+        // Take the policy lock before reading the setting: the check under the
+        // lock is the authoritative one, so a secret can never be stored in
+        // the window between update_settings saving the setting and purging.
+        let _policy = state.secret_policy.lock().unwrap();
+        if state.settings.lock().unwrap().skip_secrets {
+            return Ok(String::new());
+        }
+        let (max_items, conn) = {
+            let max_items = state.settings.lock().unwrap().max_items;
+            let conn = state.conn.lock().unwrap();
+            (max_items, conn)
+        };
+        let item = ClipboardItem {
+            id: 0,
+            content_hash: crate::categorize::hash_content(text.as_bytes()),
+            category: "secret".into(),
+            content: text,
+            kind: "text".into(),
+            pinned: false,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            html: None,
+            source_app: None,
+        };
+        db::insert_item(&conn, &item, max_items).map_err(|e| e.to_string())?;
+        return Ok(String::new());
+    }
+    let content_hash = crate::categorize::hash_content(text.as_bytes());
     let (max_items, conn) = {
         let max_items = state.settings.lock().unwrap().max_items;
         let conn = state.conn.lock().unwrap();
         (max_items, conn)
     };
+    let category = crate::categorize::categorize(&text).to_string();
     let item = ClipboardItem {
         id: 0,
-        content_hash: crate::categorize::hash_content(text.as_bytes()),
-        category: crate::categorize::categorize(&text).to_string(),
+        content_hash: content_hash.clone(),
+        category,
         content: text.clone(),
         kind: "text".into(),
         pinned: false,
@@ -327,14 +394,18 @@ pub fn ocr_image(
         html: None,
         source_app: None,
     };
-    match db::insert_item(&conn, &item, max_items).map_err(|e| e.to_string())? {
-        db::InsertOutcome { id, .. } => {
-            let mut emitted = item;
-            emitted.id = id;
-            let _ = app.emit("clipboard:new-item", &emitted);
+    db::insert_item(&conn, &item, max_items).map_err(|e| e.to_string())?;
+    // Emit and return only the stored, visible row. A duplicate hash can hit
+    // a retained secret whose category is deliberately preserved; returning
+    // the freshly built OCR text in that case would leak it to the renderer.
+    let stored = db::get_by_hash(&conn, &content_hash).map_err(|e| e.to_string())?;
+    match stored {
+        Some(row) => {
+            let _ = app.emit("clipboard:new-item", &row);
+            Ok(text)
         }
+        None => Ok(String::new()),
     }
-    Ok(text)
 }
 
 #[cfg(test)]
@@ -406,16 +477,33 @@ pub fn update_settings(
     parse_hotkey(&settings.actions_hotkey)?;
     let mut s = settings;
     s.max_items = s.max_items.clamp(100, 5000);
-    s.save(&state.settings_path)?;
-    *state.settings.lock().unwrap() = s.clone();
-    // Apply live: hotkey re-register, autostart toggle, window mode, prune.
+    // Persist and publish before the purge so a crash cannot leave the UI
+    // claiming a policy the on-disk state does not describe. The policy lock
+    // keeps capture from inserting a secret between the purge and the return.
+    let purged = {
+        let _policy = state.secret_policy.lock().unwrap();
+        s.save(&state.settings_path)?;
+        *state.settings.lock().unwrap() = s.clone();
+        with_conn(&state, |conn| {
+            let purged = if s.skip_secrets {
+                db::purge_secrets(conn)?
+            } else {
+                0
+            };
+            db::prune_old_items(conn, s.max_items)?;
+            Ok(purged)
+        })?
+    };
+    // Live side effects happen after the secret state is already consistent.
     crate::apply_hotkey(&app, &s.hotkey)?;
     crate::apply_autostart(&app, s.launch_on_login)?;
     crate::apply_window_mode(&app, s.hide_on_blur)?;
-    with_conn(&state, |conn| {
-        db::prune_old_items(conn, s.max_items)?;
-        Ok(())
-    })?;
+    if purged > 0 {
+        // The renderer has no refresh listener today; SettingsPanel's
+        // onSaved callback refetches. Keep the event for a future listener
+        // without pretending this command currently drives the UI.
+        let _ = app.emit("clipboard:refresh", ());
+    }
     Ok(s)
 }
 
@@ -423,59 +511,48 @@ pub fn update_settings(
 pub struct HistoryStats {
     pub total: i64,
     pub pinned: i64,
+    /// How many rows turning on "skip secrets" would destroy. Surfaced so the
+    /// UI can name the number before the user commits to a permanent delete.
+    pub secrets: i64,
     pub db_bytes: u64,
 }
 
 #[tauri::command]
 pub fn get_stats(state: State<'_, AppState>) -> Result<HistoryStats, String> {
-    with_conn(&state, |conn| {
-        let total: i64 =
-            conn.query_row("SELECT COUNT(*) FROM clipboard_history", [], |r| r.get(0))?;
-        let pinned: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM clipboard_history WHERE pinned = 1",
-            [],
-            |r| r.get(0),
-        )?;
-        Ok((total, pinned))
-    })
-    .map(|(total, pinned)| {
-        let db_bytes = std::fs::metadata(&state.db_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
-        HistoryStats { total, pinned, db_bytes }
+    let counts = with_conn(&state, db::get_visible_counts)?;
+    let db_bytes = std::fs::metadata(&state.db_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let (total, pinned) = counts;
+    let secrets = with_conn(&state, db::count_secrets)?;
+    Ok(HistoryStats {
+        total,
+        pinned,
+        secrets,
+        db_bytes,
     })
 }
 
-/// Delete history rows (and their orphaned image files). Returns row count.
+/// Delete visible history rows and their orphaned image files. Retained
+/// secrets are excluded even when the user clears everything; the skip
+/// setting is the explicit purge control for those rows. Returns row count.
 #[tauri::command]
 pub fn clear_history(state: State<'_, AppState>, delete_pinned: bool) -> Result<i64, String> {
-    let deleted = with_conn(&state, |conn| {
-        let flag = if delete_pinned { 1 } else { 0 };
-        let paths: Vec<String> = conn
-            .prepare(
-                "SELECT content FROM clipboard_history
-                 WHERE kind = 'image' AND (?1 = 1 OR pinned = 0)",
-            )?
-            .query_map([flag], |row| row.get(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        let deleted = conn.execute(
-            "DELETE FROM clipboard_history WHERE ?1 = 1 OR pinned = 0",
-            [flag],
-        )? as i64;
-        for p in paths {
-            let path = std::path::Path::new(&p);
-            if path.parent() == Some(&state.images_dir) {
-                let _ = std::fs::remove_file(path);
-            }
-        }
-        Ok(deleted)
+    let (deleted, image_paths) = with_conn(&state, |conn| {
+        db::clear_visible_history(conn, delete_pinned)
     })?;
+    for path in image_paths {
+        let path = std::path::Path::new(&path);
+        if path.parent() == Some(&state.images_dir) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
     // The system clipboard still holds the last copy — without suppression
     // the poller re-captures it on the next tick and Clearing never sticks
     // ("cleared 1 item" forever). Seq-guarded, so an explicit re-copy still
     // captures. Best-effort: a failed read just keeps the old behavior.
     suppress_ambient_clipboard(&state);
-    Ok(deleted)
+    Ok(deleted as i64)
 }
 
 /// Hash whatever sits on the OS clipboard right now into the suppress +

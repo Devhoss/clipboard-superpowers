@@ -2,8 +2,8 @@ pub mod categorize;
 pub mod clipboard;
 pub mod commands;
 pub mod db;
-pub mod richtext;
 pub mod ocr;
+pub mod richtext;
 pub mod settings;
 pub mod webview_profile;
 
@@ -41,8 +41,7 @@ fn show_main_window(app: &tauri::AppHandle) {
             let reassert = win.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(120));
-                if reassert.is_visible().unwrap_or(false)
-                    && !reassert.is_focused().unwrap_or(true)
+                if reassert.is_visible().unwrap_or(false) && !reassert.is_focused().unwrap_or(true)
                 {
                     if let Err(e) = reassert.set_focus() {
                         eprintln!("clipboard-superpowers: focus reassert failed: {e}");
@@ -74,8 +73,7 @@ fn toggle_main_window(app: &tauri::AppHandle) {
             let reassert = win.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(120));
-                if reassert.is_visible().unwrap_or(false)
-                    && !reassert.is_focused().unwrap_or(true)
+                if reassert.is_visible().unwrap_or(false) && !reassert.is_focused().unwrap_or(true)
                 {
                     if let Err(e) = reassert.set_focus() {
                         eprintln!("clipboard-superpowers: focus reassert failed: {e}");
@@ -171,8 +169,13 @@ pub fn run() {
             eprintln!("clipboard-superpowers: dirs+settings +{:?}", t0.elapsed());
             // One shared connection for all commands (see DbConn). A failure
             // here is fatal — every command would fail anyway.
-            let conn = db::open_db(&db_path.to_string_lossy())
-                .expect("failed to open clipboard db");
+            let conn =
+                db::open_db(&db_path.to_string_lossy()).expect("failed to open clipboard db");
+            // If secret skipping is enabled, remove legacy/pinned secret rows
+            // before the renderer can observe the new policy.
+            if settings.skip_secrets {
+                db::purge_secrets(&conn).map_err(|e| e.to_string())?;
+            }
             let state = clipboard::AppState {
                 db_path,
                 images_dir,
@@ -182,6 +185,7 @@ pub fn run() {
                 last_hash: Arc::new(Mutex::new(None)),
                 last_copy_write: Arc::new(Mutex::new(None)),
                 deleted: Arc::new(Mutex::new(Vec::new())),
+                secret_policy: Arc::new(Mutex::new(())),
             };
             clipboard::start_polling(app.handle().clone(), state.clone());
             app.manage(state);
@@ -191,26 +195,29 @@ pub fn run() {
             // a taken hotkey logs instead of killing startup.
             match apply_hotkey(app.handle(), &settings.hotkey) {
                 Ok(()) => eprintln!("clipboard-superpowers: hotkey ok +{:?}", t0.elapsed()),
-                Err(e) => eprintln!("clipboard-superpowers: hotkey FAILED ({e}) +{:?}", t0.elapsed()),
+                Err(e) => eprintln!(
+                    "clipboard-superpowers: hotkey FAILED ({e}) +{:?}",
+                    t0.elapsed()
+                ),
             }
             #[cfg(desktop)]
             if let Err(e) = apply_autostart(app.handle(), settings.launch_on_login) {
-                eprintln!("clipboard-superpowers: autostart FAILED ({e}) +{:?}", t0.elapsed());
+                eprintln!(
+                    "clipboard-superpowers: autostart FAILED ({e}) +{:?}",
+                    t0.elapsed()
+                );
             } else {
                 eprintln!("clipboard-superpowers: autostart +{:?}", t0.elapsed());
             }
             if let Err(e) = apply_window_mode(app.handle(), settings.hide_on_blur) {
-                eprintln!("clipboard-superpowers: window-mode FAILED ({e}) +{:?}", t0.elapsed());
+                eprintln!(
+                    "clipboard-superpowers: window-mode FAILED ({e}) +{:?}",
+                    t0.elapsed()
+                );
             }
 
             let toggle_label = format!("Show / Hide ({})", settings.hotkey);
-            let toggle_item = MenuItem::with_id(
-                app,
-                "toggle",
-                &toggle_label,
-                true,
-                None::<&str>,
-            )?;
+            let toggle_item = MenuItem::with_id(app, "toggle", &toggle_label, true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&toggle_item, &quit_item])?;
             tauri::tray::TrayIconBuilder::with_id("main-tray")
@@ -262,6 +269,7 @@ pub fn run() {
             commands::delete_item,
             commands::toggle_pin,
             commands::get_history_item,
+            commands::reveal_secret,
             commands::copy_to_clipboard,
             commands::copy_history_item,
             commands::copy_image_to_clipboard,
