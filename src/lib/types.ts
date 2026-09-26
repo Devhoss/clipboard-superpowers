@@ -1,6 +1,5 @@
 export type Category = "plain" | "link" | "code" | "color" | "email" | "image" | "secret" | "file";
 export type Kind = "text" | "image" | "file";
-export type ThemeMode = "light" | "dark" | "system";
 
 export interface ClipboardItem {
   id: number;

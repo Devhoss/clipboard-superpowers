@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
 import { dayLabel } from "@/lib/format";
+import { CATEGORY_META } from "@/lib/categories";
 import type { ClipboardItem } from "@/lib/types";
-import { Code2, File, FileText, Image as ImageIcon, Link2, Mail, Pin } from "lucide-react";
+import { Pin } from "lucide-react";
 
 function fileName(p: string): string {
   const seg = p.split(/[/\\]/).filter(Boolean);
@@ -23,34 +24,28 @@ function rowLabel(item: ClipboardItem): string {
   }
 }
 
+/** Type marker. The design uses a 6px category dot rather than a 26px icon
+ *  tile: the tile spent 26px of a 280px row on a glyph that repeated what the
+ *  dot already encodes. Rows carry no type/timestamp text — that lives in the
+ *  detail pane's Information block. Colour rows keep their swatch — there the
+ *  swatch IS the data, not a category label. */
 function RowIcon({ item }: { item: ClipboardItem }) {
   if (item.category === "color") {
-    // Same 26px footprint as the icon tiles so the row height and label
-    // alignment match every other row.
     return (
-      <span aria-hidden="true" className="grid size-[26px] shrink-0 place-items-center">
+      <span aria-hidden="true" className="grid size-3 shrink-0 place-items-center">
         <span
-          className="size-[13px] rounded-full shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.12)]"
+          className="size-2.5 rounded-full shadow-[inset_0_0_0_0.5px_rgba(0,0,0,0.12)]"
           style={{ background: item.content.trim() }}
         />
       </span>
     );
   }
-  const icon =
-    item.category === "link" ? <Link2 className="size-3.5" /> :
-    item.category === "code" ? <Code2 className="size-3.5" /> :
-    item.category === "image" ? <ImageIcon className="size-3.5" /> :
-    item.category === "email" ? <Mail className="size-3.5" /> :
-    item.category === "file" ? <File className="size-3.5" /> :
-    <FileText className="size-3.5" />;
-  const tint =
-    item.category === "image" ? "text-green-400" :
-    item.category === "file" ? "text-sky-300" :
-    "text-muted-foreground";
   return (
-    <span aria-hidden="true" className={`grid size-[26px] shrink-0 place-items-center rounded-md bg-muted/70 ${tint}`}>
-      {icon}
-    </span>
+    <span
+      aria-hidden="true"
+      className="size-1.5 shrink-0 rounded-full"
+      style={{ background: CATEGORY_META[item.category].dot }}
+    />
   );
 }
 
@@ -96,7 +91,12 @@ export function EntryList({
   return (
     <div
       ref={containerRef}
-      className="w-[300px] shrink-0 overflow-y-auto border-r border-border/60 px-2 pb-2 [scrollbar-width:thin]"
+      /* Scales gently instead of staying stubby at 1100px, while the detail
+         pane still takes every extra pixel — 36:64 at the 820px default.
+         The black layer is the dark half of the two-tone split: the overview
+         side is lifted, the list side stays down. Denser content wants the
+         darker surface. */
+      className="w-[clamp(280px,33%,360px)] shrink-0 overflow-y-auto border-r border-[var(--glass-edge)] bg-black/45 px-2 pb-2 [scrollbar-width:thin]"
       role="listbox"
       aria-label="Clipboard entries"
     >
@@ -133,6 +133,9 @@ export function EntryList({
               >
                 {rowLabel(item)}
               </span>
+              {/* No type tag and no timestamp: the dot already encodes the
+                  category and the detail pane's Information block carries the
+                  type, time and source. Rows stay one scannable line. */}
               {item.pinned && <Pin className="size-3 shrink-0 text-amber-400" />}
             </div>
           </div>

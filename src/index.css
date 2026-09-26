@@ -5,6 +5,94 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* The backdrop is now native: tauri.conf.json sets `transparent` + a DWM
+   acrylic window effect, so the blurred desktop behind the window is the
+   layer the glass transmits. There is deliberately NO CSS glow/gradient
+   layer anymore — it existed to give `backdrop-filter` structure to blur
+   over a flat interior, and painted a hardcoded yellow wash once real
+   acrylic landed behind it. Nothing in the page may be opaque between
+   the webview and the text (see :root for the scrim math). */
+
+/* --- Glass surfaces -----------------------------------------------------
+   The CSS-achievable subset of what react-glass-ui offers. That library's
+   headline feature is SVG-filter refraction (feTurbulence + feDisplacementMap),
+   which needs structured content behind the panel to bend — over this app's
+   flat dark interior it is invisible, and on a hotkey-instant window the
+   filter rasterisation is a latency risk. Everything below is the part that
+   actually shows: blur, saturate, translucent tint, a lit gradient edge, and
+   inner/outer light. No dependency, no filter pipeline.
+
+   Props map 1:1 onto the library's names so the two are comparable:
+     blur -> --glass-blur        borderColor/Opacity -> the ::before hairline
+     saturation -> --glass-sat    innerLight* -> the inset shadows
+     background* -> --glass-tint outerLight* -> the outer shadow
+   Tuned per-surface by overriding the custom properties. */
+@theme {
+    --glass-blur: 16px;
+    --glass-sat: 165%;
+    --glass-tint: rgb(26 25 24 / 0.55);
+    --glass-edge: rgb(255 255 255 / 0.16);
+    --glass-radius: 12px;
+}
+
+@layer components {
+  .glass {
+    position: relative;
+    isolation: isolate;
+    border-radius: var(--glass-radius);
+    background: var(--glass-tint);
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+    /* No -webkit-backdrop-filter here on purpose. Lightning CSS treats the
+       prefixed declaration as covering the unprefixed one and DELETES the
+       unprefixed copy, leaving the computed value at `none` in WebView2 —
+       reproducible, seen twice. Declaring only the standard property makes it
+       survive, and Chromium is the only engine this app ships on. */
+    box-shadow:
+      /* inner light: strongest along the top edge, as on a real lit pane */
+      inset 0 1px 0 rgb(255 255 255 / 0.11),
+      inset 0 -1px 0 rgb(255 255 255 / 0.035),
+      inset 1px 0 0 rgb(255 255 255 / 0.04),
+      /* outer light + depth */
+      0 10px 34px rgb(0 0 0 / 0.5);
+  }
+
+  /* The lit edge. A plain 1px border reads as a drawn outline; real glass
+     catches light unevenly, brighter where the surface turns away. A masked
+     gradient hairline reproduces that, and the mask is what lets the border
+     fade out at the corners instead of closing into a hard loop. */
+  .glass::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(
+      155deg,
+      rgb(255 255 255 / 0.34) 0%,
+      rgb(255 255 255 / 0.07) 30%,
+      rgb(255 255 255 / 0.02) 54%,
+      rgb(255 255 255 / 0.2) 100%
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .glass {
+      background: #1a1918;
+      backdrop-filter: none;
+    }
+  }
+}
+
 @theme inline {
     --font-heading: var(--font-sans);
     --font-sans: 'Geist Variable', sans-serif;
@@ -48,59 +136,37 @@
     --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-:root {
-    --background: oklch(0.985 0.003 250);
-    --foreground: oklch(0.19 0.018 260);
-    --card: oklch(1 0.002 250);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.46 0.16 265);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.955 0.008 250);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.955 0.008 250);
-    --muted-foreground: oklch(0.51 0.02 260);
-    --accent: oklch(0.945 0.015 260);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.89 0.012 255);
-    --input: oklch(0.89 0.012 255);
-    --ring: oklch(0.63 0.15 265);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
-    --scrollbar-thumb: oklch(0.74 0.025 260);
-    --scrollbar-thumb-hover: oklch(0.59 0.06 260);
-}
+/* Always dark. The app is tray-only and summoned by hotkey, so it renders the
+   same palette over any wallpaper; a light variant would need its own glass
+   recipe (dark text on a light tint, a dark edge instead of a lit one) and is
+   deliberately not maintained. The dark set is the only set.
 
-.dark {
+   Surfaces are alpha, not opaque: the Tauri window is `transparent` and DWM
+   paints native acrylic behind the webview (tauri.conf.json windowEffects),
+   so every layer between the wallpaper and the text must transmit. Values are
+   chosen so that even a bright wallpaper behind the acrylic keeps white
+   body text at 4.5:1 ((1 − 0.5) × (1 − 0.46) ≈ 27% of the backdrop
+   reaches the eye; the list pane's extra black/45 darkens its half
+   further). Accent/button colors stay opaque on purpose. */
+:root {
     /* Grok-bot inspired: pure near-black base, charcoal grouped cards,
        white accent. No blue tint anywhere. */
-    --background: #08080a;
+    --background: rgb(8 8 10 / 0.5);
     --foreground: #f5f5f7;
-    --card: #1c1c1f;
+    --card: rgb(28 28 31 / 0.72);
     --card-foreground: #f5f5f7;
-    --popover: #1c1c1f;
+    --popover: rgb(28 28 31 / 0.85);
     --popover-foreground: #f5f5f7;
     --primary: #f5f5f7;
     --primary-foreground: #08080a;
-    --secondary: #26262b;
+    --secondary: rgb(38 38 43 / 0.8);
     --secondary-foreground: #f5f5f7;
-    --muted: #26262b;
-    --muted-foreground: #9a9aa3;
-    --accent: #2e2e34;
+    --muted: rgb(38 38 43 / 0.8);
+    /* Slightly lifted from the original #9a9aa3 (+11 on each channel, same
+       hue): muted text now sits over transmitted acrylic instead of a flat
+       near-black, so it needs the extra luminance to hold 4.5:1. */
+    --muted-foreground: #a5a5ae;
+    --accent: rgb(46 46 52 / 0.8);
     --accent-foreground: #f5f5f7;
     --destructive: #ff453a;
     --border: #ffffff1f;
@@ -111,16 +177,17 @@
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
-    --sidebar: #101013;
+    --sidebar: rgb(16 16 19 / 0.8);
     --sidebar-foreground: #f5f5f7;
     --sidebar-primary: #f5f5f7;
     --sidebar-primary-foreground: #08080a;
-    --sidebar-accent: #26262b;
+    --sidebar-accent: rgb(38 38 43 / 0.8);
     --sidebar-accent-foreground: #f5f5f7;
     --sidebar-border: #ffffff1a;
     --sidebar-ring: #8e8e93;
     --scrollbar-thumb: #3a3a40;
     --scrollbar-thumb-hover: #54545c;
+    --radius: 0.625rem;
 }
 
 @layer base {
@@ -128,43 +195,34 @@
     @apply border-border outline-ring/50;
     }
   html {
-    color-scheme: light;
-  }
-  html.dark {
     color-scheme: dark;
-  }
+    }
+  /* Nothing between <html> and the app may be opaque — the native acrylic
+     lives behind the window, and an opaque canvas would blank it. Body's
+     semi-transparent --background (see :root) is the only scrim; #root is
+     cleared explicitly so no UA/default rule can sneak a fill in. */
+  html,
+  #root {
+    background: transparent;
+    }
   body {
     @apply bg-background text-foreground;
-    /* No color transition here on purpose: theme swaps are driven by the
-       View Transitions cross-fade below, so surfaces never shimmer through
-       intermediate values. */
     }
   html {
     @apply font-sans;
     }
 
-/* Smooth theme cross-fade (View Transitions API, Chromium/WebView2).
-   The old snapshot fades out while the new one fades in — one coordinated
-   200ms move instead of dozens of staggered element transitions. */
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation-duration: 200ms;
-  animation-timing-function: ease;
-}
-::view-transition-old(root) {
-  animation-name: theme-fade-out;
-}
-::view-transition-new(root) {
-  animation-name: theme-fade-in;
-}
-@keyframes theme-fade-out {
-  from { opacity: 1; }
-  to { opacity: 0; }
-}
-@keyframes theme-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
+  /* Chromium paints text selection and the caret with a hardcoded blue when
+     the author sets nothing — the one colour this app must never show. Both
+     get the neutral foreground treatment instead (seen in the search field,
+     which is where the selection and caret are actually visible). */
+  ::selection {
+    background: rgb(245 245 247 / 0.22);
+  }
+  input,
+  textarea {
+    caret-color: var(--foreground);
+  }
 
   * {
     scrollbar-width: thin;
@@ -194,24 +252,19 @@
 
 /* Rich-text preview (PR4): pasted HTML often carries explicit colors from
    the source app (e.g. Word/Docs black `rgb(0,0,0)`), which is invisible on
-   our dark cards. In dark mode the preview inherits card text instead —
-   structure (headings, bold, sizes) stays, source colors don't. Light mode
-   keeps original colors. Copy-back always writes the stored HTML untouched. */
-html.dark .rich-preview,
-html.dark .rich-preview * {
+   our dark cards. The preview inherits card text instead — structure
+   (headings, bold, sizes) stays, source colors don't. Copy-back always writes
+   the stored HTML untouched. */
+.rich-preview,
+.rich-preview * {
   color: inherit !important;
   background-color: transparent !important;
 }
 
-/* Code token colors for the detail-pane syntax highlighter (mock v2 palette:
-   one Dark+ inspired set for light, iOS-native accents for dark). */
-.tok-kw { color: #c678dd; }
-.tok-fn { color: #61afef; }
-.tok-str { color: #98c379; }
-.tok-num { color: #d19a66; }
-.tok-cm { color: #7f848e; font-style: italic; }
-html.dark .tok-kw { color: #bf5af2; }
-html.dark .tok-fn { color: #64a2ff; }
-html.dark .tok-str { color: #30d158; }
-html.dark .tok-num { color: #ff9f0a; }
-html.dark .tok-cm { color: #98989d; }
+/* Code token colors for the detail-pane syntax highlighter (iOS-native accents,
+   the one set this app has ever needed). */
+.tok-kw { color: #bf5af2; }
+.tok-fn { color: #64a2ff; }
+.tok-str { color: #30d158; }
+.tok-num { color: #ff9f0a; }
+.tok-cm { color: #98989d; font-style: italic; }

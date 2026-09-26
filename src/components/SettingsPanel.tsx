@@ -48,7 +48,7 @@ function Toggle({
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="rounded-xl border border-border/80 bg-card/85 p-3">
-      <h2 className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+      <h2 className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
         {title}
       </h2>
       {children}

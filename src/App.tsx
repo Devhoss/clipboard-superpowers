@@ -5,25 +5,22 @@ import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { DetailPane } from "./components/DetailPane";
 import { EntryList } from "./components/EntryList";
 import { SettingsPanel } from "./components/SettingsPanel";
-import { TypeDropdown } from "./components/TypeDropdown";
+import { CategoryTabs } from "./components/CategoryTabs";
 import { api, EVENTS } from "./lib/api";
 import { matchesActionsCombo, moveSelection } from "./lib/keyboardNav";
 import { evictCachedImage } from "@/lib/imageCache";
-import type { AppSettings, Category, ClipboardItem, ThemeMode } from "./lib/types";
+import type { AppSettings, Category, ClipboardItem } from "./lib/types";
 import {
   ArrowLeft,
-  Clipboard as ClipboardIcon,
+  ClipboardPaste,
   Copy,
   Keyboard,
-  Laptop,
-  Moon,
   Search as SearchIcon,
   Settings as SettingsIcon,
-  Sun,
   X,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import appIcon from "./assets/app-icon.png";
 
 // Keep the renderer usable while it is being previewed in a regular browser.
 // Tauri injects this bridge before the app loads, but it is intentionally absent
@@ -33,8 +30,6 @@ const appWindow =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
     ? getCurrentWebviewWindow()
     : null;
-
-const THEME_STORAGE_KEY = "clipboard-superpowers-theme";
 
 /** Pinned cards always float above history, newest first within each group.
 // Backend fetch already orders this way, but optimistic local moves (click
@@ -61,11 +56,6 @@ function buildQuery(text: string, date: string): string {
   return t ? `${t} date:${d}` : `date:${d}`;
 }
 
-function getInitialTheme(): ThemeMode {
-  const stored = localStorage.getItem(THEME_STORAGE_KEY);
-  return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
-}
-
 function App() {
   const [items, setItems] = useState<ClipboardItem[]>([]);
   const [search, setSearch] = useState("");
@@ -75,7 +65,6 @@ function App() {
   const [dateFilter, setDateFilter] = useState("");
   const [debounced, setDebounced] = useState("");
   const [category, setCategory] = useState<Category | "all">("all");
-  const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const [visibleCount, setVisibleCount] = useState(50);
   const [view, setView] = useState<"list" | "settings">("list");
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -110,7 +99,6 @@ function App() {
   settingsRef.current = settings;
   const inputRef = useRef<HTMLInputElement>(null);
   const requestId = useRef(0);
-  const themeWrapped = useRef(false);
   const actionsRef = useRef<HTMLDivElement>(null);
 
   const fetchFor = useCallback((query: string) => {
@@ -294,38 +282,6 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchFor, search]);
 
-  useEffect(() => {
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = (mode: ThemeMode) => {
-      const isDark = mode === "dark" || (mode === "system" && media.matches);
-      document.documentElement.classList.toggle("dark", isDark);
-      document.documentElement.style.colorScheme = isDark ? "dark" : "light";
-    };
-
-    localStorage.setItem(THEME_STORAGE_KEY, theme);
-
-    const doc = document as Document & {
-      startViewTransition?: (cb: () => void) => void;
-    };
-    // First mount: pre-paint script already set the class — just sync
-    // colorScheme, no transition.
-    if (!themeWrapped.current) {
-      themeWrapped.current = true;
-      const isDark = document.documentElement.classList.contains("dark");
-      document.documentElement.style.colorScheme = isDark ? "dark" : "light";
-    } else if (doc.startViewTransition) {
-      doc.startViewTransition(() => apply(theme));
-    } else {
-      apply(theme);
-    }
-
-    // Only follow the OS while the user chose "system".
-    if (theme !== "system") return;
-    const onChange = () => apply("system");
-    media.addEventListener("change", onChange);
-    return () => media.removeEventListener("change", onChange);
-  }, [theme]);
-
   const filtered = useMemo(
     () => items.filter((i) => category === "all" || i.category === category),
     [items, category],
@@ -472,14 +428,13 @@ function App() {
     setSelectedId(null);
   }, []);
 
-  const appearance: { mode: ThemeMode; label: string; icon: typeof Sun }[] = [
-    { mode: "light", label: "Light", icon: Sun },
-    { mode: "system", label: "System", icon: Laptop },
-    { mode: "dark", label: "Dark", icon: Moon },
-  ];
-
   return (
-    <main className="flex h-screen min-w-0 flex-col overflow-hidden bg-background text-foreground antialiased">
+    /* The glass shell. Translucent so the native acrylic behind the window
+       (tauri.conf.json `transparent` + DWM window effect) transmits — with
+       the glow layer gone there is nothing left for backdrop-filter to
+       blur, so the backdrop-* utilities are deliberately absent: they'd
+       only sample this uniform tint. The panes below tone it further. */
+    <main className="relative z-10 flex h-screen min-w-0 flex-col overflow-hidden rounded-xl border border-[var(--glass-edge)] bg-[rgb(13_12_11/0.46)] text-foreground antialiased shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_0_0_1px_rgba(255,255,255,0.09),0_30px_74px_rgba(0,0,0,0.55)]">
       {/* Dedicated grab strip: the top bar's interactive controls fill it,
           so this margin is what makes the frameless window easy to drag. */}
       <div data-tauri-drag-region aria-hidden="true" className="h-3 shrink-0" />
@@ -505,14 +460,31 @@ function App() {
           data-tauri-drag-region
           className="flex h-11 shrink-0 items-center gap-2.5 border-b border-border/60 px-3"
         >
-          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg bg-muted/70 px-2.5 py-1.5 transition-shadow focus-within:bg-muted focus-within:shadow-[0_0_0_3px_rgba(10,132,255,0.15)]">
+          {/* The app's real icon (the same asset the bundle/tray use), at the
+              size the topbar can actually render. The mascot is white-bodied
+              with a yellow bolt, so it reads as-is on the dark bar — an
+              earlier amber container was a guess at a logo that already
+              existed. No container: the mark supplies its own silhouette. */}
+          <img
+            src={appIcon}
+            alt=""
+            aria-hidden="true"
+            className="size-7 shrink-0 select-none"
+            draggable={false}
+          />
+          {/* Glass field, not a gray pill: the acrylic behind the bar is the
+              fill. Focus uses a neutral foreground halo — the stock iOS blue
+              (rgba(10,132,255,…)) broke the app's one colour rule, no blue
+              tint anywhere. */}
+          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-[var(--glass-edge)] bg-foreground/[0.06] px-2.5 py-1.5 transition-[background-color,box-shadow] duration-150 focus-within:bg-foreground/10 focus-within:shadow-[0_0_0_2px_rgba(245,245,247,0.12)]">
             <SearchIcon className="size-3.5 shrink-0 text-muted-foreground" />
             <input
               ref={inputRef}
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Type to filter entries… date:YYYY-MM-DD"
+              placeholder="Search clipboard history…"
+              title="Plain text search — or date:YYYY-MM-DD to filter a single day"
               autoComplete="off"
               className="min-w-0 flex-1 border-0 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
             />
@@ -538,7 +510,7 @@ function App() {
               title="Filter by day"
               value={dateFilter}
               onChange={(e) => setDateFilter(e.target.value)}
-              className="h-7 rounded-lg border border-border/60 bg-muted/70 px-2 text-[11.5px] text-muted-foreground outline-none transition-colors focus:border-foreground/25 focus:text-foreground"
+              className="h-7 rounded-lg border border-[var(--glass-edge)] bg-foreground/[0.06] px-2 text-[11.5px] text-muted-foreground outline-none transition-colors focus:bg-foreground/10 focus:text-foreground"
             />
             {dateFilter && (
               <button
@@ -551,8 +523,21 @@ function App() {
                 <X className="size-3" />
               </button>
             )}
-            <TypeDropdown value={category} onChange={handleCategory} />
           </div>
+        </div>
+      )}
+
+      {/* Category filter, on its own row. Eight tabs do not fit beside
+          the search field at 1025px, and a second dropdown to replace the
+          first would just move the two-click cost around. */}
+      {view === "list" && (
+        <div className="flex shrink-0 items-center gap-3 border-b border-[var(--glass-edge)] bg-foreground/[0.015] px-3 py-1.5">
+          <CategoryTabs value={category} onChange={handleCategory} />
+          {/* Pushed right by auto margin, not by a spacer element — a leading
+              spacer pushed the tab group toward the middle. */}
+          <span className="ml-auto hidden shrink-0 text-[11px] text-muted-foreground max-[900px]:hidden">
+            Double-click a row to copy
+          </span>
         </div>
       )}
 
@@ -599,92 +584,85 @@ function App() {
       )}
 
       {view === "list" && (
-        <div
-          data-tauri-drag-region
-          className="flex h-11 shrink-0 items-center gap-2.5 border-t border-border/60 px-3"
-        >
+        <>
+          {/* Footer actions. Copy is the primary — it works from anywhere and
+              changes nothing outside the app. Paste reaches into the previously
+              focused window, so it stays visually quieter while still being a
+              real button rather than a keyboard-only shortcut. */}
           <div
             data-tauri-drag-region
-            className="flex shrink-0 items-center gap-2 text-[12px] font-semibold"
+            className="flex h-11 shrink-0 items-center gap-2.5 border-t border-border/60 px-3"
           >
-            <span
-              aria-hidden="true"
-              className="grid size-[22px] place-items-center rounded-md bg-gradient-to-br from-rose-400 to-rose-600 text-white shadow-[0_2px_6px_rgba(255,55,95,0.4)]"
-            >
-              <ClipboardIcon className="size-3" />
-            </span>
-            <span data-tauri-drag-region>Clipboard History</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => selectedItem && copyItem(selectedItem)}
-            disabled={!selectedItem}
-            className="mx-auto flex items-center gap-2 rounded-lg bg-foreground px-4 py-[7px] text-[12.5px] font-semibold text-background transition-all duration-150 hover:opacity-90 active:scale-[0.97] disabled:opacity-40"
-          >
-            <Copy className="size-3.5" />
-            Copy to Clipboard
-          </button>
-          <div ref={actionsRef} className="relative shrink-0">
-            <button
-              type="button"
-              onClick={() => setActionsOpen((o) => !o)}
-              className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <Keyboard className="size-3.5" />
-              Actions
-              {(settings?.actions_hotkey ?? "Ctrl+K")
-                .split("+")
-                .map((part) => (
-                  <kbd
-                    key={part}
-                    className="rounded border border-border/80 px-1 py-px font-sans text-[9.5px]"
-                  >
-                    {part.trim()}
-                  </kbd>
-                ))}
-            </button>
-            {actionsOpen && (
-              <div className="absolute bottom-[calc(100%+8px)] right-0 z-30 w-[170px] rounded-xl border border-border/80 bg-popover p-1 shadow-xl shadow-black/25">
+            {/* This bar is actions-only now. The mascot + "Clipboard History"
+                wordmark is gone: the window's whole surface IS the clipboard
+                history, so the label only restated what you were already
+                looking at. There is still no titlebar of its own, so the empty
+                space left of the buttons is the drag handle — on a real
+                full-height box, so the whole gap drags the window, not just
+                its padding. */}
+            <div data-tauri-drag-region className="min-w-0 flex-1 self-stretch" />
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => selectedItem && copyItem(selectedItem)}
+                disabled={!selectedItem}
+                className="flex items-center gap-2 rounded-lg bg-foreground px-4 py-[7px] text-[12.5px] font-semibold text-background transition-all duration-150 hover:opacity-90 active:scale-[0.97] disabled:opacity-40"
+              >
+                <Copy className="size-3.5" />
+                Copy
+              </button>
+              <button
+                type="button"
+                onClick={() => selectedItem && pasteItem(selectedItem)}
+                disabled={!selectedItem}
+                title="Copy, then paste into the last active window"
+                className="flex items-center gap-1.5 rounded-lg border border-[var(--glass-edge)] px-3 py-[7px] text-[12.5px] font-medium text-foreground transition-colors duration-150 hover:bg-foreground/10 active:scale-[0.97] disabled:opacity-40"
+              >
+                <ClipboardPaste className="size-3.5" />
+                Paste
+              </button>
+              <div ref={actionsRef} className="relative shrink-0">
                 <button
                   type="button"
-                  onClick={() => {
-                    setActionsOpen(false);
-                    setView("settings");
-                  }}
-                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] transition-colors hover:bg-foreground/5"
+                  onClick={() => setActionsOpen((o) => !o)}
+                  className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:text-foreground"
                 >
-                  <SettingsIcon className="size-3.5 text-muted-foreground" />
-                  Open Settings
-                </button>
-                <div className="mx-2 my-1 border-t border-border/50" />
-                <div className="flex items-center justify-between px-2 py-1">
-                  <span className="text-[11px] text-muted-foreground">Appearance</span>
-                  <div className="flex gap-0.5">
-                    {appearance.map(({ mode, label, icon: Icon }) => (
-                      <button
-                        key={mode}
-                        type="button"
-                        aria-label={label}
-                        aria-pressed={theme === mode}
-                        onClick={() => setTheme(mode)}
-                        className={cn(
-                          "grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground",
-                          theme === mode && "bg-foreground/10 text-foreground",
-                        )}
+                  <Keyboard className="size-3.5" />
+                  Actions
+                  {(settings?.actions_hotkey ?? "Ctrl+K")
+                    .split("+")
+                    .map((part) => (
+                      <kbd
+                        key={part}
+                        className="rounded border border-border/80 px-1 py-px font-sans text-[11px]"
                       >
-                        <Icon className="size-3.5" />
-                      </button>
+                        {part.trim()}
+                      </kbd>
                     ))}
+                </button>
+                {actionsOpen && (
+                  <div className="glass absolute bottom-[calc(100%+8px)] right-0 z-30 w-[170px] [--glass-blur:20px] [--glass-tint:rgb(30_29_28/0.42)] [--glass-radius:14px] p-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActionsOpen(false);
+                        setView("settings");
+                      }}
+                      className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] transition-colors hover:bg-foreground/5"
+                    >
+                      <SettingsIcon className="size-3.5 text-muted-foreground" />
+                      Open Settings
+                    </button>
                   </div>
-                </div>
+                )}
               </div>
-            )}
+            </div>
           </div>
-        </div>
+        </>
       )}
 
       {toast && (
-        <div className="pointer-events-none fixed bottom-14 left-1/2 -translate-x-1/2 rounded-full bg-foreground px-3.5 py-[7px] text-[12px] font-medium text-background shadow-[0_8px_24px_rgba(0,0,0,0.25)]">
+        <div className="glass pointer-events-none fixed bottom-14 left-1/2 z-50 [--glass-blur:18px] [--glass-tint:rgb(30_29_28/0.72)] [--glass-radius:999px] -translate-x-1/2 px-3.5 py-[7px] text-[12px] font-medium text-foreground">
           {toast}
         </div>
       )}

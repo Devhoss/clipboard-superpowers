@@ -77,7 +77,7 @@ cargo run --example dump_db   # prints last 20 non-secret rows + total (run in s
 
 ```
 src/
-  App.tsx                 # master-detail shell: topbar, sidebar+preview, toolbar, keyboard, theme
+  App.tsx                 # master-detail shell: topbar, sidebar+preview, toolbar, keyboard
   components/
     EntryList.tsx         # left pane: day-grouped rows, double-click copy, pagination
     DetailPane.tsx        # right pane: stage previews, Information rows, pin/delete/open, secret reveal
@@ -85,7 +85,7 @@ src/
     SettingsPanel.tsx     # hotkeys (global + actions), capture toggles, history cap, arm-to-confirm purge, clear
   lib/
     api.ts                # Tauri invoke wrappers + event name
-    types.ts              # ClipboardItem, Category, Kind, ThemeMode
+    types.ts              # ClipboardItem, Category, Kind
     categories.ts         # category meta (dot colors, labels)
     highlight.ts          # lazy regex tokenizer for the code preview
     format.ts             # time/day labels, colors, preview truncation
@@ -112,7 +112,7 @@ design/                  # interactive redesign mockups (v1 cards, v2 master-det
 - **Poll interval / cap:** `POLL_INTERVAL_MS = 300`, `MAX_ITEMS = 1000` in `clipboard.rs`
 - **WebView2 profile:** app-owned at `E:\AppData\ClipboardSuperpowers\WebView2` (`webview_profile.rs`). Existing profiles are migrated in with transient lock/cache state excluded; the source is kept as `*.migrated-bak` until the new profile is verified alive; stale `LOCK`/`lockfile` artifacts are cleaned on every startup. An inherited user-wide `WEBVIEW2_USER_DATA_FOLDER` (e.g. another app's) is deliberately overridden — that inheritance caused dead-WebView startups after Windows restarts.
 - **Window:** 820×560 (resizable 640–1100), frameless, `visible: false` + `skipTaskbar: true` (tray-first)
-- **Theme:** light/dark/system via `localStorage`, defaults to system
+- **Theme:** always dark. The palette lives on `:root` in `src/index.css` — there is no light variant, no `localStorage` key, and no Appearance control. A tray-only hotkey window renders the same glass over any wallpaper, and a light recipe would need its own tint, text contrast, and edge treatment.
 
 ## Troubleshooting
 
@@ -125,7 +125,7 @@ design/                  # interactive redesign mockups (v1 cards, v2 master-det
 
 ## Roadmap
 
-Shipped: global hotkey (re-mappable in Settings) · settings surface (hotkeys, capture toggles incl. files + secret-skip, history cap, autostart, hide-on-blur, clear, stats) · search · auto-categories (fenced code, IDE flavors, anchored colors) · secret hygiene with keyword-less token detection · pins · image capture · tray + autostart · light/dark/system themes · optimistic instant copy · re-copy bumps to top · full keyboard control · Enter-to-paste directly into the previous app · password/OTP hygiene · rich-text/HTML clipboard with sanitized preview · Explorer file drops with sizes + open/reveal · local WinRT OCR extraction (zero dependencies, on-device only) · master–detail v2 UI with preview pane and Information rows · application attribution · syntax-highlighted code preview · 17× smaller list payloads + shared DB connection + optimistic actions.
+Shipped: global hotkey (re-mappable in Settings) · settings surface (hotkeys, capture toggles incl. files + secret-skip, history cap, autostart, hide-on-blur, clear, stats) · search · auto-categories (fenced code, IDE flavors, anchored colors) · secret hygiene with keyword-less token detection · pins · image capture · tray + autostart · always-dark glass theme · optimistic instant copy · re-copy bumps to top · full keyboard control · Enter-to-paste directly into the previous app · password/OTP hygiene · rich-text/HTML clipboard with sanitized preview · Explorer file drops with sizes + open/reveal · local WinRT OCR extraction (zero dependencies, on-device only) · master–detail v2 UI with preview pane and Information rows · application attribution · syntax-highlighted code preview · 17× smaller list payloads + shared DB connection + optimistic actions.
 
 Dropped by design review: cloud sync (fights local-only guarantees, duplicates OS vendors, needs accounts + E2EE + a forever server) · plugin system (multiplier with nothing to multiply yet; custom-actions-lite is the fallback if real extensibility demand appears) · full grammar syntax highlighting (syntect: 10–30MB RAM for preview fidelity we don't need — the lazy regex tokenizer covers the mock's fidelity class).
 

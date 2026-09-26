@@ -121,7 +121,11 @@ function Stage({
       const paths = item.content.split("\n").filter(Boolean);
       const shown = paths.slice(0, 8);
       return (
-        <div className="w-[300px] max-w-full">
+        /* 100cqh + overflow: the path rows are the other stage tall enough to
+           outgrow the reserved bands on a short window — scroll them rather
+           than let them spill under the hint (see the image stage for why the
+           cap is in container units, not %). */
+        <div className="w-[300px] max-w-full max-h-[100cqh] overflow-y-auto">
           {shown.map((p) => (
             <button
               key={p}
@@ -130,7 +134,7 @@ function Stage({
               onClick={() => onOpenPath(p)}
               className="flex min-w-0 w-full items-center gap-2.5 border-b border-border/50 py-2 text-left first:border-0"
             >
-              <span className="shrink-0 rounded-lg bg-sky-400/15 px-1.5 py-1 font-mono text-[9px] font-bold text-sky-300">
+              <span className="shrink-0 rounded-lg bg-sky-400/15 px-1.5 py-1 font-mono text-[11px] font-bold text-sky-300">
                 {((fileName(p).split(".").pop() ?? "?").toUpperCase()).slice(0, 4)}
               </span>
               <span className="min-w-0 truncate text-[13px] font-medium">{fileName(p)}</span>
@@ -178,21 +182,35 @@ function StageImage({ item }: { item: ClipboardItem }) {
   if (failed) return <span className="text-[12.5px] text-muted-foreground">image unavailable</span>;
   if (!src) return <span className="text-[12.5px] text-muted-foreground">loading…</span>;
   return (
-    <div className="relative">
-      <img
-        src={src}
-        alt="Clipboard image"
-        className="max-h-[220px] max-w-[380px] rounded-xl object-contain shadow-[0_20px_50px_rgba(0,0,0,0.35)]"
-        onLoad={(e) => {
-          const img = e.currentTarget;
-          setDims({ w: img.naturalWidth, h: img.naturalHeight });
-        }}
-      />
-      {dims && (
-        <span className="absolute bottom-2 right-2 rounded-md bg-black/35 px-2 py-0.5 text-[10.5px] font-semibold text-white backdrop-blur">
-          {dims.w} × {dims.h}
-        </span>
-      )}
+    /* The stage centres its content with `place-items`, but the image and its
+       dims badge must read as ONE object: the badge is positioned against the
+       image box, so anything that offsets them apart (a stretch, a changed
+       display mode, a stale stylesheet) sends the badge to the pane corner
+       while the image stays put. So this stage does its own centring — a
+       full-size flex box with the image centred in it — instead of relying on
+       the panel. `h-full`/`w-full` resolve because the stage panel is a size
+       container with a definite height (absolute top/bottom insets).
+       The caps stay in container units: the panel reserves bands at the top
+       (action buttons) and bottom (hint), and 100cqh/100cqw is the free space
+       between them — a % height has no definite containing block here, and a
+       flat 220px cap ignored the bands and ran under the hint. */
+    <div className="flex h-full w-full items-center justify-center">
+      <div className="relative max-h-full max-w-full">
+        <img
+          src={src}
+          alt="Clipboard image"
+          className="max-h-[min(220px,100cqh)] max-w-[min(380px,100cqw)] rounded-xl object-contain shadow-[0_20px_50px_rgba(0,0,0,0.35)]"
+          onLoad={(e) => {
+            const img = e.currentTarget;
+            setDims({ w: img.naturalWidth, h: img.naturalHeight });
+          }}
+        />
+        {dims && (
+          <span className="absolute bottom-2 right-2 rounded-md bg-black/35 px-2 py-0.5 text-[11px] font-semibold text-white backdrop-blur">
+            {dims.w} × {dims.h}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -273,7 +291,7 @@ export function DetailPane({
     const meta2 = CATEGORY_META.secret;
     return (
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="relative grid min-h-0 flex-1 place-items-center overflow-hidden border-b border-border/60 bg-muted/30 px-5 pb-8 pt-12">
+        <div className="relative min-h-0 flex-1 overflow-hidden border-b border-[var(--glass-edge)]">
           <div className="absolute right-2.5 top-2.5 z-10 flex gap-1">
             <button
               type="button"
@@ -311,26 +329,34 @@ export function DetailPane({
               title="Delete"
               aria-label="Delete"
               onClick={() => onDelete(item)}
-              className="grid size-7 place-items-center rounded-lg bg-card/80 text-muted-foreground shadow-sm transition-colors hover:bg-destructive/10 hover:text-destructive"
+              /* Destructive is tinted at rest, not only on hover: a mis-click
+                 risk shouldn't depend on the pointer already being there. */
+              className="grid size-7 place-items-center rounded-lg bg-card/80 text-destructive/80 shadow-sm transition-colors hover:bg-destructive/15 hover:text-destructive"
             >
               <Trash2 className="size-3.5" />
             </button>
           </div>
-          {revealed === null ? (
-            <div className="flex flex-col items-center gap-2 text-center">
-              <div className="text-[12.5px] text-muted-foreground">
-                {revealBusy ? "Revealing…" : "Secret hidden"}
+          {/* Free-space panel: the absolute insets give it a definite height,
+              which is what the container-query caps inside Stage measure
+              against (see StageImage). Padding is horizontal only so 100cqh is
+              the usable height under either reading of the container box. */}
+          <div className="absolute inset-x-0 bottom-8 top-12 grid place-items-center px-5 [container-type:size]">
+            {revealed === null ? (
+              <div className="flex flex-col items-center gap-2 text-center">
+                <div className="text-[12.5px] text-muted-foreground">
+                  {revealBusy ? "Revealing…" : "Secret hidden"}
+                </div>
+                <div className="text-[11px] text-muted-foreground/70">
+                  Use the eye button to show it
+                </div>
               </div>
-              <div className="text-[11px] text-muted-foreground/70">
-                Use the eye button to show it
-              </div>
-            </div>
-          ) : (
-            <pre className="h-full max-h-full w-full max-w-[440px] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-card p-4 font-mono text-[12px] leading-relaxed shadow-[0_0_0_1px_var(--border),0_12px_32px_rgba(0,0,0,0.10)]">
-              {revealed}
-            </pre>
-          )}
-          <div className="absolute bottom-2.5 left-3.5 truncate text-[10.5px] text-muted-foreground">
+            ) : (
+              <pre className="h-full max-h-full w-full max-w-[440px] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-card p-4 font-mono text-[12px] leading-relaxed shadow-[0_0_0_1px_var(--border),0_12px_32px_rgba(0,0,0,0.10)]">
+                {revealed}
+              </pre>
+            )}
+          </div>
+          <div className="absolute bottom-2.5 left-3.5 truncate text-[11px] text-muted-foreground">
             {revealed === null
               ? "Hidden · re-hides when the window loses focus"
               : "Double-click a row to copy · Enter pastes into the previous app"}
@@ -338,21 +364,25 @@ export function DetailPane({
         </div>
         <div className="shrink-0 px-4 pb-3 pt-2.5">
           <div className="mb-0.5 text-[11px] font-semibold text-muted-foreground">Information</div>
-          {(
-            [
-              ["Content Type", meta2?.single ?? "secret"],
-              ["Copied", `${dayLabel(item.created_at)}, ${formatTime(item.created_at)}`],
-              ...(item.source_app ? [["Application", item.source_app] as [string, string]] : []),
-            ] as [string, React.ReactNode][]
-          ).map(([k, v]) => (
-            <div
-              key={k}
-              className="flex items-baseline justify-between gap-3 border-b border-border/50 py-[7px] text-[12.5px] last:border-0"
-            >
-              <span className="shrink-0 text-muted-foreground">{k}</span>
-              <span className="min-w-0 truncate text-right">{v}</span>
-            </div>
-          ))}
+          {/* No card fill and no divider wash: the labels already carry the
+              structure (uppercase, tracked, muted) and anything opaque here
+              would punch a gray hole in the acrylic behind the pane. */}
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(132px,1fr))] gap-x-4 gap-y-2">
+            {(
+              [
+                ["Content Type", meta2?.single ?? "secret"],
+                ["Copied", `${dayLabel(item.created_at)}, ${formatTime(item.created_at)}`],
+                ...(item.source_app ? [["Application", item.source_app] as [string, string]] : []),
+              ] as [string, React.ReactNode][]
+            ).map(([k, v]) => (
+              <div key={k} className="min-w-0">
+                <div className="text-[11px] uppercase tracking-[0.06em] text-muted-foreground">
+                  {k}
+                </div>
+                <div className="truncate text-[12.5px]">{v}</div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -390,9 +420,13 @@ export function DetailPane({
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">
-      {/* pt/pb clear the absolute stage actions (top) and hint (bottom) so
-          long lines can never render underneath them. */}
-      <div className="relative grid min-h-0 flex-1 place-items-center overflow-hidden border-b border-border/60 bg-muted/30 px-5 pb-8 pt-12">
+      {/* The stage is a plain relative box; the content lives in an inner
+          absolutely-positioned free-space panel between the action row (top)
+          and the hint (bottom), so that panel's height is DEFINITE — which is
+          what the image's container-query caps need. Padding there is
+          horizontal only, so 100cqh means the usable height under either
+          reading of the container box. */}
+      <div className="relative min-h-0 flex-1 overflow-hidden border-b border-[var(--glass-edge)]">
         <div className="absolute right-2.5 top-2.5 z-10 flex gap-1">
           {(item.category === "link" || item.kind === "file") && (
             <button
@@ -425,27 +459,33 @@ export function DetailPane({
             title="Delete"
             aria-label="Delete"
             onClick={() => onDelete(item)}
-            className="grid size-7 place-items-center rounded-lg bg-card/80 text-muted-foreground shadow-sm transition-colors hover:bg-destructive/10 hover:text-destructive"
+            /* Destructive is tinted at rest, not only on hover: a mis-click
+               risk shouldn't depend on the pointer already being there. */
+            className="grid size-7 place-items-center rounded-lg bg-card/80 text-destructive/80 shadow-sm transition-colors hover:bg-destructive/15 hover:text-destructive"
           >
             <Trash2 className="size-3.5" />
           </button>
         </div>
-        <Stage item={view} onOpenUrl={onOpenUrl} onOpenPath={onOpenPath} />
-        <div className="absolute bottom-2.5 left-3.5 truncate text-[10.5px] text-muted-foreground">
+        <div className="absolute inset-x-0 bottom-8 top-12 grid place-items-center px-5 [container-type:size]">
+          <Stage item={view} onOpenUrl={onOpenUrl} onOpenPath={onOpenPath} />
+        </div>
+        <div className="absolute bottom-2.5 left-3.5 truncate text-[11px] text-muted-foreground">
           {hint}
         </div>
       </div>
       <div className="shrink-0 px-4 pb-3 pt-2.5">
         <div className="mb-0.5 text-[11px] font-semibold text-muted-foreground">Information</div>
-        {infoRows.map(([k, v]) => (
-          <div
-            key={k}
-            className="flex items-baseline justify-between gap-3 border-b border-border/50 py-[7px] text-[12.5px] last:border-0"
-          >
-            <span className="shrink-0 text-muted-foreground">{k}</span>
-            <span className="min-w-0 truncate text-right">{v}</span>
-          </div>
-        ))}
+        {/* Same as the secret branch: labels only, no card fill — see there. */}
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(132px,1fr))] gap-x-4 gap-y-2">
+          {infoRows.map(([k, v]) => (
+            <div key={k} className="min-w-0">
+              <div className="text-[11px] uppercase tracking-[0.06em] text-muted-foreground">
+                {k}
+              </div>
+              <div className="truncate text-[12.5px]">{v}</div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
