@@ -2,6 +2,13 @@
 // browser with sample history. Served from design/qa-serve (patched index.html
 // loads this BEFORE the bundle).
 (function () {
+  // The app's window is transparent (native acrylic shows through in Tauri);
+  // a plain browser has no DWM backdrop behind the page, so the glass layers
+  // would composite against white. Pin the canvas to the app's base colour
+  // here — mock only, never in the real bundle. Inline style wins over the
+  // stylesheet's `html { background: transparent }`.
+  document.documentElement.style.background = "#08080a";
+
   const DAY = 86_400_000;
   const now = Date.now();
   const iso = (msAgo) => new Date(now - msAgo).toISOString();
@@ -11,7 +18,11 @@
     mk("color", "#6663F6", iso(2 * 60_000), true, "Figma"),
     mk("color", "#D459B5", iso(9 * 60_000), false),
     mk("link", "https://ui.shadcn.com/docs/components/scroll-area", iso(14 * 60_000), false, "Google Chrome"),
-    mk_app_code("function debounce(fn, ms) {\n  let t;\n  return (...args) => {\n    clearTimeout(t);\n    t = setTimeout(() => fn(...args), ms);\n  };\n}", iso(20 * 60_000), false),
+    // Was `mk_app_code(...)`, a helper that is not defined anywhere in this
+    // file — the whole IIFE threw at load, so the browser preview silently
+    // rendered an empty app instead of the sample history. mk() takes the
+    // category first, hence the extra leading argument.
+    mk("code", "function debounce(fn, ms) {\n  let t;\n  return (...args) => {\n    clearTimeout(t);\n    t = setTimeout(() => fn(...args), ms);\n  };\n}", iso(20 * 60_000), false, "Cursor"),
     mk("image", "C:\\img\\shot.png", iso(55 * 60_000), false),
     mk("file", "C:\\work\\pitch-deck-v7.pdf\nC:\\work\\hero-shot.png", iso(2 * 3_600_000), false),
     mk("secret", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c", iso(3 * 3_600_000), false),
@@ -144,6 +155,9 @@
           return Promise.resolve({
             total: items.filter((r) => r.category !== "secret").length,
             pinned: items.filter((r) => r.category !== "secret" && r.pinned).length,
+            // Redacted secrets still occupy rows, so they count toward the
+            // total the real backend reports (db.rs get_visible_counts).
+            secrets: items.filter((r) => r.category === "secret").length,
             db_bytes: 123456,
           });
         case "clear_history": {
