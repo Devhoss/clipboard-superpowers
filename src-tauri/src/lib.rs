@@ -25,6 +25,8 @@ use settings::Settings;
 /// tray menu's explicit Show/Hide item.
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
+        // Cheap re-assert: DWM can drop the acrylic accent while hidden.
+        apply_window_effects(&win);
         if !win.is_visible().unwrap_or(false) {
             if let Err(e) = win.show() {
                 eprintln!("clipboard-superpowers: tray show failed: {e}");
@@ -63,6 +65,8 @@ fn toggle_main_window(app: &tauri::AppHandle) {
         } else {
             // NOTE: no win.center() here — the window stays where the user
             // dragged it. Initial position comes from tauri.conf.json.
+            // Cheap re-assert: DWM can drop the acrylic accent while hidden.
+            apply_window_effects(&win);
             if let Err(e) = win.show().and_then(|()| win.set_focus()) {
                 eprintln!("clipboard-superpowers: toggle show/focus failed: {e}");
             }
@@ -118,6 +122,27 @@ pub fn apply_window_mode(app: &tauri::AppHandle, hide_on_blur: bool) -> Result<(
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Native acrylic behind the webview (Windows DWM). The window must be
+/// `transparent` in tauri.conf.json and the CSS layers above must let alpha
+/// through, or the effect is invisible behind an opaque page.
+///
+/// Re-applied on every summon because some Windows builds drop the accent
+/// attribute across hide/show cycles; the call is cheap and idempotent
+/// (it just re-sets the same DWM state on the main thread).
+fn apply_window_effects(win: &tauri::WebviewWindow) {
+    use tauri::window::{Color, Effect, EffectsBuilder};
+    let effects = EffectsBuilder::new()
+        .effect(Effect::Acrylic)
+        // Same tint as tauri.conf.json's windowEffects.color: near-black at
+        // 60% alpha, so a bright wallpaper behind the acrylic can't wash out
+        // white body text (Win10 1903+ blends it; Win11 ignores the color).
+        .color(Color(8, 8, 10, 0x99))
+        .build();
+    if let Err(e) = win.set_effects(effects) {
+        eprintln!("clipboard-superpowers: window effects FAILED ({e})");
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -214,6 +239,13 @@ pub fn run() {
                     "clipboard-superpowers: window-mode FAILED ({e}) +{:?}",
                     t0.elapsed()
                 );
+            }
+            // Native acrylic behind the webview. Applied here (before the
+            // window is ever shown) and re-asserted on every summon — see
+            // apply_window_effects for why both.
+            if let Some(win) = app.get_webview_window("main") {
+                apply_window_effects(&win);
+                eprintln!("clipboard-superpowers: window effects +{:?}", t0.elapsed());
             }
 
             let toggle_label = format!("Show / Hide ({})", settings.hotkey);

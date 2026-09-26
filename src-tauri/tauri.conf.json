@@ -20,7 +20,11 @@
         "minHeight": 480,
         "maxWidth": 1100,
         "decorations": false,
-        "transparent": false,
+        "transparent": true,
+        "windowEffects": {
+          "effects": ["acrylic"],
+          "color": "#08080a99"
+        },
         "resizable": true,
         "alwaysOnTop": false,
         "skipTaskbar": true,
